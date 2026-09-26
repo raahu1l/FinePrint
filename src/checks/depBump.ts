@@ -5,7 +5,6 @@
  * and flags any major-version bumps found in their patches.
  */
 
-import path from "path";
 import type { CommitRecord } from "../github/types.js";
 
 export interface DepBumpResult {
@@ -199,7 +198,7 @@ export function checkDepBump(commit: CommitRecord): DepBumpResult {
     if (file.patch === null) continue;
 
     // Compare only the basename, case-insensitively.
-    const basename = path.basename(file.filename).toLowerCase();
+    const basename = file.filename.split("/").pop()!.toLowerCase();
     if (!MANIFEST_FILES.has(basename)) continue;
 
     const fileReasons = parseManifest(basename, file.patch);
