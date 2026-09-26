@@ -378,7 +378,7 @@ const S = {
   } as React.CSSProperties,
 
   diffLineContext: {
-    color: "#555",
+    color: "#255",
     display: "block",
   } as React.CSSProperties,
 
