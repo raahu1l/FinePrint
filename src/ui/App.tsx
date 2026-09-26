@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useEffect } from "react";
 import { fetchCommitRange, parseRepoUrl, fetchRepoTags } from "../github/fetchCommitRange.js";
+import { OversizedRangeError } from "../github/types.js";
 import { runChecks } from "../checks/checkLogic.js";
 import type { CommitVerdict } from "../checks/types.js";
 import type { UndisclosedDiff } from "../checks/areaMismatch.js";
@@ -838,8 +839,11 @@ function InputScreen({ onSubmit, loading, error }: InputScreenProps) {
           setHead("");
         } else {
           setTags(fetched);
-          setBase((prev) => (fetched.includes(prev) ? prev : fetched[fetched.length > 1 ? 1 : 0]));
-          setHead((prev) => (fetched.includes(prev) ? prev : fetched[0]));
+          // Default to the two most-recent adjacent tags in API order (index 0 =
+          // newest, index 1 = second-newest).  Always reset both when a fresh tag
+          // list arrives so stale values from a previous repo are never kept.
+          setBase(fetched.length > 1 ? fetched[1] : fetched[0]);
+          setHead(fetched[0]);
         }
       } catch (err) {
         if (cancelled) return;
@@ -1122,8 +1126,11 @@ export default function App() {
         setReceiptData({ owner, repo, base, head, verdicts, commitFiles });
         setScreen("receipt");
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        setError(msg);
+        // Give a friendly, non-technical message when the range is too large.
+        const friendly = err instanceof OversizedRangeError
+          ? "This range spans too many commits — FinePrint checks one release at a time. Try comparing two adjacent tags instead."
+          : err instanceof Error ? err.message : String(err);
+        setError(friendly);
         setScreen("input");
       }
     },

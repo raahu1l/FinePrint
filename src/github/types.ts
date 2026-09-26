@@ -46,3 +46,22 @@ export class GitHubApiError extends Error {
     this.name = "GitHubApiError";
   }
 }
+
+/**
+ * Raised when the compare range spans more than 250 commits, which exceeds
+ * the GitHub compare endpoint hard limit.
+ */
+export class OversizedRangeError extends Error {
+  constructor(
+    public readonly base: string,
+    public readonly head: string,
+    public readonly totalCommits: number
+  ) {
+    super(
+      `Range "${base}...${head}" spans ${totalCommits} commits, ` +
+        `which exceeds the GitHub compare endpoint limit of 250. ` +
+        `Split the range into smaller chunks or use the commits list endpoint for large ranges.`
+    );
+    this.name = "OversizedRangeError";
+  }
+}

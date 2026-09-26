@@ -22,6 +22,7 @@ import {
   CommitRecord,
   FetchOptions,
   GitHubApiError,
+  OversizedRangeError,
   RateLimitError,
 } from "./types.js";
 
@@ -175,11 +176,7 @@ export async function fetchCommitRange(
 
   if (comparison.total_commits > MAX_COMPARE_COMMITS) {
     // Surface the limitation rather than silently returning partial data.
-    throw new Error(
-      `Range "${base}...${head}" spans ${comparison.total_commits} commits, ` +
-        `which exceeds the GitHub compare endpoint limit of ${MAX_COMPARE_COMMITS}. ` +
-        `Split the range into smaller chunks or use the commits list endpoint for large ranges.`
-    );
+    throw new OversizedRangeError(base, head, comparison.total_commits);
   }
 
   const shas = comparison.commits.map((c) => c.sha);

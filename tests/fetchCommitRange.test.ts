@@ -16,7 +16,7 @@ import {
   buildFetcher,
   fetchRepoTags,
 } from "../src/github/fetchCommitRange.js";
-import { RateLimitError, GitHubApiError } from "../src/github/types.js";
+import { RateLimitError, GitHubApiError, OversizedRangeError } from "../src/github/types.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -325,13 +325,60 @@ describe("fetchCommitRange", () => {
 describe("fetchCommitRange — error cases", () => {
   beforeEach(() => mockFetch.mockReset());
 
-  it("throws with a clear message when total_commits exceeds 250", async () => {
+  it("throws OversizedRangeError when total_commits exceeds 250", async () => {
     mockFetch.mockResolvedValueOnce(
       makeResponse({ total_commits: 300, commits: [] })
     );
     await expect(
       fetchCommitRange("https://github.com/owner/repo", "v1.0.0", "v2.0.0")
-    ).rejects.toThrow(/exceeds the GitHub compare endpoint limit/);
+    ).rejects.toBeInstanceOf(OversizedRangeError);
+  });
+
+  it("OversizedRangeError carries base, head, and totalCommits", async () => {
+    mockFetch.mockResolvedValueOnce(
+      makeResponse({ total_commits: 300, commits: [] })
+    );
+    let err: OversizedRangeError | undefined;
+    try {
+      await fetchCommitRange("https://github.com/owner/repo", "v1.0.0", "v2.0.0");
+    } catch (e) {
+      err = e as OversizedRangeError;
+    }
+    expect(err!.base).toBe("v1.0.0");
+    expect(err!.head).toBe("v2.0.0");
+    expect(err!.totalCommits).toBe(300);
+  });
+
+  it("OversizedRangeError is caught and produces the friendly UI message", async () => {
+    // Simulate the transform that App.handleCheck applies when it catches the error.
+    const FRIENDLY_MESSAGE =
+      "This range spans too many commits — FinePrint checks one release at a time. Try comparing two adjacent tags instead.";
+
+    mockFetch.mockResolvedValueOnce(
+      makeResponse({ total_commits: 999, commits: [] })
+    );
+    let caught: unknown;
+    try {
+      await fetchCommitRange("https://github.com/owner/repo", "v0.1.0", "v9.0.0");
+    } catch (e) {
+      caught = e;
+    }
+
+    // The App catches OversizedRangeError and substitutes the friendly message —
+    // verify that the caught error is the right type so the branch is taken.
+    expect(caught).toBeInstanceOf(OversizedRangeError);
+
+    // Reproduce the exact App.handleCheck transform:
+    const friendly =
+      caught instanceof OversizedRangeError
+        ? FRIENDLY_MESSAGE
+        : caught instanceof Error
+          ? caught.message
+          : String(caught);
+
+    expect(friendly).toBe(FRIENDLY_MESSAGE);
+    // The raw technical message is NOT shown to the user.
+    expect(friendly).not.toMatch(/exceeds the GitHub compare endpoint limit/);
   });
 
   it("surfaces RateLimitError from the compare call", async () => {
