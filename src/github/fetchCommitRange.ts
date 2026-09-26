@@ -122,6 +122,10 @@ export function buildFetcher(options: FetchOptions = {}): GitHubFetcher {
 // GitHub response shape (minimal — only fields we use)
 // ---------------------------------------------------------------------------
 
+interface GhTagItem {
+  name: string;
+}
+
 interface GhCompareResponse {
   commits: Array<{ sha: string }>;
   total_commits: number;
@@ -202,4 +206,26 @@ export async function fetchCommitRange(
   }
 
   return records;
+}
+
+// ---------------------------------------------------------------------------
+// fetchRepoTags
+// ---------------------------------------------------------------------------
+
+/**
+ * Fetch the list of tag names for a GitHub repository.
+ *
+ * @param repoUrl  Full GitHub repo URL, e.g. `https://github.com/owner/repo`
+ * @param options  Optional: `{ token }` for authenticated requests
+ * @returns        Array of tag name strings, in the order returned by GitHub
+ */
+export async function fetchRepoTags(
+  repoUrl: string,
+  options: FetchOptions = {}
+): Promise<string[]> {
+  const { owner, repo } = parseRepoUrl(repoUrl);
+  const get = buildFetcher(options);
+  const url = `${API_BASE}/repos/${owner}/${repo}/tags?per_page=100`;
+  const tags = (await get(url)) as GhTagItem[];
+  return tags.map((t) => t.name);
 }

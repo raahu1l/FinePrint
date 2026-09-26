@@ -14,6 +14,7 @@ import {
   fetchCommitRange,
   parseRepoUrl,
   buildFetcher,
+  fetchRepoTags,
 } from "../src/github/fetchCommitRange.js";
 import { RateLimitError, GitHubApiError } from "../src/github/types.js";
 
@@ -372,5 +373,70 @@ describe("fetchCommitRange — error cases", () => {
       fetchCommitRange("not-a-url", "v1.0.0", "v1.1.0")
     ).rejects.toThrow(/Invalid GitHub repo URL/);
     expect(mockFetch).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fetchRepoTags
+// ---------------------------------------------------------------------------
+
+describe("fetchRepoTags", () => {
+  beforeEach(() => mockFetch.mockReset());
+
+  it("returns tag names from the API response", async () => {
+    mockFetch.mockResolvedValueOnce(
+      makeResponse([{ name: "v2.0.0" }, { name: "v1.1.0" }, { name: "v1.0.0" }])
+    );
+    const tags = await fetchRepoTags("https://github.com/owner/repo");
+    expect(tags).toEqual(["v2.0.0", "v1.1.0", "v1.0.0"]);
+  });
+
+  it("calls the correct GitHub tags endpoint URL", async () => {
+    mockFetch.mockResolvedValueOnce(makeResponse([{ name: "v1.0.0" }]));
+    await fetchRepoTags("https://github.com/acme/widget");
+    const [url] = mockFetch.mock.calls[0] as [string];
+    expect(url).toBe(
+      "https://api.github.com/repos/acme/widget/tags?per_page=100"
+    );
+  });
+
+  it("returns an empty array when the repo has no tags", async () => {
+    mockFetch.mockResolvedValueOnce(makeResponse([]));
+    const tags = await fetchRepoTags("https://github.com/owner/empty-repo");
+    expect(tags).toEqual([]);
+  });
+
+  it("accepts a short owner/repo URL after normalisation", async () => {
+    mockFetch.mockResolvedValueOnce(makeResponse([{ name: "v3.0.0" }]));
+    // fetchRepoTags itself calls parseRepoUrl, which requires a full URL —
+    // the normalisation lives in InputScreen; pass a full URL here.
+    const tags = await fetchRepoTags("https://github.com/owner/repo");
+    expect(tags).toEqual(["v3.0.0"]);
+  });
+
+  it("surfaces GitHubApiError on a 404 response", async () => {
+    mockFetch.mockResolvedValueOnce(
+      makeResponse({ message: "Not Found" }, 404)
+    );
+    await expect(
+      fetchRepoTags("https://github.com/owner/private-repo")
+    ).rejects.toBeInstanceOf(GitHubApiError);
+  });
+
+  it("surfaces RateLimitError on HTTP 429", async () => {
+    mockFetch.mockResolvedValueOnce(
+      makeResponse({}, 429, { "x-ratelimit-reset": "9999999999" })
+    );
+    await expect(
+      fetchRepoTags("https://github.com/owner/repo")
+    ).rejects.toBeInstanceOf(RateLimitError);
+  });
+
+  it("sends Bearer token when provided", async () => {
+    mockFetch.mockResolvedValueOnce(makeResponse([{ name: "v1.0.0" }]));
+    await fetchRepoTags("https://github.com/owner/repo", { token: "ghp_abc" });
+    const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    const headers = init.headers as Record<string, string>;
+    expect(headers["Authorization"]).toBe("Bearer ghp_abc");
   });
 });

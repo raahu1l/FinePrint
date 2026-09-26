@@ -1,5 +1,5 @@
-import React, { useState, useCallback } from "react";
-import { fetchCommitRange, parseRepoUrl } from "../github/fetchCommitRange.js";
+import React, { useState, useCallback, useEffect } from "react";
+import { fetchCommitRange, parseRepoUrl, fetchRepoTags } from "../github/fetchCommitRange.js";
 import { runChecks } from "../checks/checkLogic.js";
 import type { CommitVerdict } from "../checks/types.js";
 import type { UndisclosedDiff } from "../checks/areaMismatch.js";
@@ -640,18 +640,6 @@ function inferClaimedScope(subject: string): string {
 // InputScreen
 // ---------------------------------------------------------------------------
 
-// A simple list of well-known tags for demo dropdowns; real app fetches from API
-const DEMO_TAGS = [
-  "v18.2.0",
-  "v18.3.0",
-  "v18.3.1",
-  "v19.0.0",
-  "v1.0.0",
-  "v1.1.0",
-  "v1.2.0",
-  "v1.3.0",
-];
-
 interface InputScreenProps {
   onSubmit: (repoUrl: string, base: string, head: string) => void;
   loading: boolean;
@@ -660,8 +648,63 @@ interface InputScreenProps {
 
 function InputScreen({ onSubmit, loading, error }: InputScreenProps) {
   const [repoUrl, setRepoUrl] = useState("facebook/react");
-  const [base, setBase] = useState("v18.2.0");
-  const [head, setHead] = useState("v18.3.1");
+  const [base, setBase] = useState("");
+  const [head, setHead] = useState("");
+  const [tags, setTags] = useState<string[]>([]);
+  const [tagsLoading, setTagsLoading] = useState(false);
+  const [tagsError, setTagsError] = useState<string | null>(null);
+
+  // Fetch tags whenever the repo URL changes (with a short debounce)
+  useEffect(() => {
+    const normalised = repoUrl.trim();
+    if (!normalised) return;
+
+    const url = normalised.includes("github.com")
+      ? normalised
+      : `https://github.com/${normalised}`;
+
+    // Validate the URL is parseable before firing a request
+    try {
+      parseRepoUrl(url);
+    } catch {
+      return;
+    }
+
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      setTagsLoading(true);
+      setTagsError(null);
+      try {
+        const token = (import.meta as { env?: { VITE_GITHUB_TOKEN?: string } })
+          .env?.VITE_GITHUB_TOKEN;
+        const fetched = await fetchRepoTags(url, { token });
+        if (cancelled) return;
+        if (fetched.length === 0) {
+          setTagsError("This repository has no tags.");
+          setTags([]);
+          setBase("");
+          setHead("");
+        } else {
+          setTags(fetched);
+          setBase((prev) => (fetched.includes(prev) ? prev : fetched[fetched.length > 1 ? 1 : 0]));
+          setHead((prev) => (fetched.includes(prev) ? prev : fetched[0]));
+        }
+      } catch (err) {
+        if (cancelled) return;
+        setTagsError(err instanceof Error ? err.message : String(err));
+        setTags([]);
+        setBase("");
+        setHead("");
+      } finally {
+        if (!cancelled) setTagsLoading(false);
+      }
+    }, 600);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [repoUrl]);
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -705,6 +748,7 @@ function InputScreen({ onSubmit, loading, error }: InputScreenProps) {
           <p style={S.hint}>Enter a canonical repository path or public HTTPS link</p>
 
           {/* Tag row */}
+          {tagsError && <div style={S.errorBox}>{tagsError}</div>}
           <div style={S.tagRow}>
             <div style={S.tagGroup}>
               <label style={S.label} htmlFor="baseTag">
@@ -715,15 +759,17 @@ function InputScreen({ onSubmit, loading, error }: InputScreenProps) {
                 style={S.select}
                 value={base}
                 onChange={(e) => setBase(e.target.value)}
+                disabled={tagsLoading || tags.length === 0}
               >
-                {DEMO_TAGS.map((t) => (
+                {tagsLoading && <option value="">Loading tags…</option>}
+                {!tagsLoading && tags.length === 0 && (
+                  <option value="">—</option>
+                )}
+                {tags.map((t) => (
                   <option key={t} value={t}>
                     {t}
                   </option>
                 ))}
-                {!DEMO_TAGS.includes(base) && (
-                  <option value={base}>{base}</option>
-                )}
               </select>
             </div>
 
@@ -736,20 +782,26 @@ function InputScreen({ onSubmit, loading, error }: InputScreenProps) {
                 style={S.select}
                 value={head}
                 onChange={(e) => setHead(e.target.value)}
+                disabled={tagsLoading || tags.length === 0}
               >
-                {DEMO_TAGS.map((t) => (
+                {tagsLoading && <option value="">Loading tags…</option>}
+                {!tagsLoading && tags.length === 0 && (
+                  <option value="">—</option>
+                )}
+                {tags.map((t) => (
                   <option key={t} value={t}>
                     {t}
                   </option>
                 ))}
-                {!DEMO_TAGS.includes(head) && (
-                  <option value={head}>{head}</option>
-                )}
               </select>
             </div>
           </div>
 
-          <button style={S.checkBtn} type="submit" disabled={loading}>
+          <button
+            style={S.checkBtn}
+            type="submit"
+            disabled={loading || tagsLoading || tags.length === 0}
+          >
             {loading ? "CHECKING…" : "CHECK RELEASE →"}
           </button>
         </form>
