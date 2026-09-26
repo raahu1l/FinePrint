@@ -14,6 +14,9 @@
  *
  * A commit flagged by more than one check gets a single verdict entry with all
  * reasons combined; the commit is never duplicated.
+ *
+ * Mechanical commits (release-plugin, merges, release-prep, etc.) are excluded
+ * from all checks and receive status "mechanical".
  */
 
 import type { CommitRecord } from "../github/types.js";
@@ -24,6 +27,32 @@ import type { CommitVerdict } from "./types.js";
 
 export type { CommitVerdict, CommitStatus } from "./types.js";
 export type { BumpType };
+
+// ---------------------------------------------------------------------------
+// isMechanicalCommit — detect auto-generated commits that should be skipped
+// ---------------------------------------------------------------------------
+
+/**
+ * Patterns that identify auto-generated, tooling-authored commits.
+ * These are never human-authored change descriptions and should be excluded
+ * from all checks to avoid false positives.
+ */
+const MECHANICAL_PATTERNS: RegExp[] = [
+  /^\[maven-release-plugin\]/,
+  /^Merge branch/,
+  /^(Prep|Prepare) .*release/i,
+  /^Post-release/i,
+  /^Update .* release notes/i,
+];
+
+/**
+ * Returns `true` when `message` matches any mechanical-commit pattern.
+ * Exported so it can be unit-tested independently.
+ */
+export function isMechanicalCommit(message: string): boolean {
+  const subject = message.split("\n")[0];
+  return MECHANICAL_PATTERNS.some((re) => re.test(subject));
+}
 
 // ---------------------------------------------------------------------------
 // mergeVerdicts — pure merge helper (exported for unit testing)
@@ -86,6 +115,16 @@ export function runChecks(
   const bumpType = parseBumpType(baseTag, headTag);
 
   return commits.map((commit) => {
+    // Mechanical commits are excluded from all checks — return immediately.
+    if (isMechanicalCommit(commit.message)) {
+      return {
+        sha: commit.sha,
+        message: commit.message,
+        status: "mechanical",
+        reasons: [],
+      } satisfies CommitVerdict;
+    }
+
     const areaResult = checkAreaMismatch(commit);
     const semverResult = checkSemver(commit, bumpType);
     const depResult = checkDepBump(commit);

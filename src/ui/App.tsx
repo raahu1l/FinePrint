@@ -10,6 +10,10 @@ import {
   buildGitHubCompareUrl,
   buildReleaseNotesDraft,
 } from "./diffUtils.js";
+import {
+  buildReceiptRuns,
+  computeHealthCounts,
+} from "./receiptUtils.js";
 
 // ---------------------------------------------------------------------------
 // Styles (inline CSS-in-JS object map)
@@ -240,6 +244,53 @@ const S = {
     color: "#cc0000",
     marginLeft: 10,
     fontSize: 13,
+  } as React.CSSProperties,
+
+  mechanicalBadge: {
+    fontWeight: 400,
+    color: "#999",
+    marginLeft: 10,
+    fontSize: 12,
+    fontStyle: "italic" as const,
+  } as React.CSSProperties,
+
+  // ── Health bar ──────────────────────────────────────────────────────────────
+  healthBarWrap: {
+    margin: "10px 0 6px",
+  } as React.CSSProperties,
+
+  healthBarTrack: {
+    display: "flex",
+    height: 6,
+    width: "100%",
+    background: "#e0e0e0",
+    overflow: "hidden" as const,
+  } as React.CSSProperties,
+
+  healthBarCaption: {
+    fontFamily: MONO,
+    fontSize: 10,
+    color: "#888",
+    marginTop: 4,
+    letterSpacing: "0.04em",
+  } as React.CSSProperties,
+
+  // ── Collapsible ok group ────────────────────────────────────────────────────
+  collapseRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+    cursor: "pointer",
+    background: "none",
+    border: "none",
+    borderBottom: "1px dashed #ddd",
+    width: "100%",
+    textAlign: "left" as const,
+    fontFamily: MONO,
+    fontSize: 12,
+    color: "#888",
+    paddingTop: 8,
+    paddingBottom: 8,
   } as React.CSSProperties,
 
   reasonLine: {
@@ -554,6 +605,103 @@ function ExpandableDiff({
 }
 
 // ---------------------------------------------------------------------------
+// HealthBar
+// ---------------------------------------------------------------------------
+
+interface HealthBarProps {
+  routine: number;
+  flagged: number;
+}
+
+function HealthBar({ routine, flagged }: HealthBarProps) {
+  const total = routine + flagged;
+  const routinePct = total === 0 ? 100 : Math.round((routine / total) * 100);
+  const flaggedPct = 100 - routinePct;
+
+  return (
+    <div style={S.healthBarWrap}>
+      <div style={S.healthBarTrack}>
+        <div
+          style={{
+            width: `${routinePct}%`,
+            background: flagged === 0 ? "#4caf50" : "#bdbdbd",
+            transition: "width 0.2s",
+          }}
+        />
+        {flaggedPct > 0 && (
+          <div
+            style={{
+              width: `${flaggedPct}%`,
+              background: "#cc0000",
+            }}
+          />
+        )}
+      </div>
+      <div style={S.healthBarCaption}>
+        {routine} routine &bull; {flagged} flagged
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// CollapsibleOkGroup
+// ---------------------------------------------------------------------------
+
+interface CollapsibleOkGroupProps {
+  verdicts: CommitVerdict[];
+  allFilesMap: Map<string, CommitFile[]>;
+  owner: string;
+  repo: string;
+  base: string;
+  head: string;
+}
+
+function CollapsibleOkGroup({
+  verdicts,
+  allFilesMap,
+  owner,
+  repo,
+  base,
+  head,
+}: CollapsibleOkGroupProps) {
+  const [open, setOpen] = useState(false);
+
+  if (open) {
+    return (
+      <>
+        {verdicts.map((v) => (
+          <CommitRow
+            key={v.sha}
+            verdict={v}
+            allFiles={allFilesMap.get(v.sha) ?? []}
+            owner={owner}
+            repo={repo}
+            base={base}
+            head={head}
+          />
+        ))}
+        <button
+          style={{ ...S.collapseRow, color: "#3b82d4" }}
+          onClick={() => setOpen(false)}
+        >
+          ▾ collapse {verdicts.length} routine commits
+        </button>
+      </>
+    );
+  }
+
+  return (
+    <button style={S.collapseRow} onClick={() => setOpen(true)}>
+      <span>▸</span>
+      <span>
+        {verdicts.length} routine commits — all clear ▸
+      </span>
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // CommitRow
 // ---------------------------------------------------------------------------
 
@@ -597,10 +745,14 @@ function CommitRow({
     <div style={S.commitRow}>
       <div style={S.commitRowTop}>
         <span style={S.commitMsg}>{subject}</span>
-        {verdict.status === "ok" ? (
+        {verdict.status === "ok" && (
           <span style={S.commitStat}>{statStr}</span>
-        ) : (
+        )}
+        {verdict.status === "adjusted" && (
           <span style={S.adjustedBadge}>adjusted</span>
+        )}
+        {verdict.status === "mechanical" && (
+          <span style={S.mechanicalBadge}>mechanical</span>
         )}
       </div>
 
@@ -836,8 +988,11 @@ interface ReceiptScreenProps {
 
 function ReceiptScreen({ data, onReset }: ReceiptScreenProps) {
   const { owner, repo, base, head, verdicts, commitFiles } = data;
-  const adjustedCount = verdicts.filter((v) => v.status === "adjusted").length;
+  const { routine: routineCount, flagged: adjustedCount } =
+    computeHealthCounts(verdicts);
   const shortSha = verdicts[0]?.sha.slice(0, 8).toUpperCase() ?? "00000000";
+
+  const receiptRuns = buildReceiptRuns(verdicts);
 
   function handleCopyRaw() {
     const draft = buildReleaseNotesDraft(verdicts, base, head);
@@ -864,20 +1019,35 @@ function ReceiptScreen({ data, onReset }: ReceiptScreenProps) {
           {verdicts.length} items · release receipt
         </div>
 
+        {/* Health bar */}
+        <HealthBar routine={routineCount} flagged={adjustedCount} />
+
         <div style={S.dashedDivider} />
 
-        {/* Commit rows */}
-        {verdicts.map((v) => (
-          <CommitRow
-            key={v.sha}
-            verdict={v}
-            allFiles={commitFiles.get(v.sha) ?? []}
-            owner={owner}
-            repo={repo}
-            base={base}
-            head={head}
-          />
-        ))}
+        {/* Commit rows (with ok-run collapsing) */}
+        {receiptRuns.map((run, idx) =>
+          run.kind === "group" ? (
+            <CollapsibleOkGroup
+              key={`group-${idx}`}
+              verdicts={run.verdicts}
+              allFilesMap={commitFiles}
+              owner={owner}
+              repo={repo}
+              base={base}
+              head={head}
+            />
+          ) : (
+            <CommitRow
+              key={run.verdict.sha}
+              verdict={run.verdict}
+              allFiles={commitFiles.get(run.verdict.sha) ?? []}
+              owner={owner}
+              repo={repo}
+              base={base}
+              head={head}
+            />
+          )
+        )}
 
         {/* Total */}
         <div style={S.totalRow}>

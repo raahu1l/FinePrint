@@ -11,10 +11,11 @@ export type { UndisclosedDiff };
 /**
  * The verdict produced for a single commit after running all checks.
  *
- * - `"ok"`       — no issues found by any check
- * - `"adjusted"` — one or more checks flagged this commit
+ * - `"ok"`         — no issues found by any check
+ * - `"adjusted"`   — one or more checks flagged this commit
+ * - `"mechanical"` — auto-generated commit skipped from all checks
  */
-export type CommitStatus = "ok" | "adjusted";
+export type CommitStatus = "ok" | "adjusted" | "mechanical";
 
 /**
  * The final per-commit verdict emitted by runChecks / mergeVerdicts.

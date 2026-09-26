@@ -9,7 +9,7 @@
  * to verify that reasons are combined (not duplicated) into one verdict.
  */
 
-import { mergeVerdicts, runChecks } from "../src/checks/checkLogic.js";
+import { mergeVerdicts, runChecks, isMechanicalCommit } from "../src/checks/checkLogic.js";
 import type { CommitRecord } from "../src/github/types.js";
 import type { AreaMismatchResult } from "../src/checks/areaMismatch.js";
 import type { SemverResult } from "../src/checks/semver.js";
@@ -238,5 +238,123 @@ describe("runChecks", () => {
     const verdicts = runChecks(commits, "v1.0.0", "v1.0.1");
     expect(verdicts.find((v) => v.sha === "clean")!.status).toBe("ok");
     expect(verdicts.find((v) => v.sha === "dirty")!.status).toBe("adjusted");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isMechanicalCommit — pattern matching
+// ---------------------------------------------------------------------------
+
+describe("isMechanicalCommit", () => {
+  test.each([
+    ["[maven-release-plugin] prepare release v1.2.0"],
+    ["[maven-release-plugin] prepare for next development iteration"],
+    ["Merge branch 'main' into feature/xyz"],
+    ["Merge branch 'release/1.0'"],
+    ["Prepare release v2.3.0"],
+    ["Prep release 1.0.0-RC1"],
+    ["Post-release version bump"],
+    ["Post-release: set next development version"],
+    ["Update CHANGELOG release notes"],
+    ["Update v1.2.0 release notes"],
+  ])("returns true for mechanical message: %s", (msg) => {
+    expect(isMechanicalCommit(msg)).toBe(true);
+  });
+
+  test.each([
+    ["fix: correct login redirect"],
+    ["feat(auth): add OAuth support"],
+    ["chore: bump dependencies"],
+    ["docs: update README"],
+    ["refactor: extract helper function"],
+    // Should NOT match partial overlaps (pattern anchors to start of subject)
+    ["chore: prepare the test suite"],
+    ["notes on the release process"],
+  ])("returns false for non-mechanical message: %s", (msg) => {
+    expect(isMechanicalCommit(msg)).toBe(false);
+  });
+
+  test("only tests the first line of a multi-line message", () => {
+    // Body contains a mechanical-looking line but subject is normal
+    expect(
+      isMechanicalCommit("fix: resolve NPE\n\nMerge branch 'hotfix' details")
+    ).toBe(false);
+    // Subject is mechanical, body is normal
+    expect(
+      isMechanicalCommit("[maven-release-plugin] prepare\n\nsome body text")
+    ).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// runChecks — mechanical commit exclusion
+// ---------------------------------------------------------------------------
+
+describe("runChecks — mechanical commit exclusion", () => {
+  /** A commit that would normally trigger area-mismatch AND dep-bump checks */
+  const trickyFiles = [
+    {
+      filename: "package.json",
+      additions: 1,
+      deletions: 1,
+      patch: '-  "lodash": "3.10.1",\n+  "lodash": "4.17.21"',
+    },
+  ];
+
+  test.each([
+    ["[maven-release-plugin] prepare release v1.0.0"],
+    ["Merge branch 'main'"],
+    ["Prepare release v2.0.0"],
+    ["Prep release 1.0.0"],
+    ["Post-release version bump"],
+    ["Update v1.0.0 release notes"],
+  ])("mechanical commit is always status=mechanical regardless of diff: %s", (msg) => {
+    const commits: CommitRecord[] = [
+      { sha: "mech01", message: msg, files: trickyFiles },
+    ];
+    const verdicts = runChecks(commits, "v0.9.0", "v1.0.0");
+    expect(verdicts).toHaveLength(1);
+    expect(verdicts[0].status).toBe("mechanical");
+    expect(verdicts[0].reasons).toHaveLength(0);
+  });
+
+  test("mechanical commits mixed with real commits: only real commits are checked", () => {
+    const commits: CommitRecord[] = [
+      {
+        sha: "mech01",
+        message: "[maven-release-plugin] prepare release v1.0.0",
+        files: trickyFiles,
+      },
+      {
+        sha: "real01",
+        message: "fix: correct null check",
+        files: [],
+      },
+      {
+        sha: "mech02",
+        message: "Merge branch 'release/1.0'",
+        files: trickyFiles,
+      },
+    ];
+    const verdicts = runChecks(commits, "v0.9.0", "v1.0.0");
+    expect(verdicts).toHaveLength(3);
+    expect(verdicts.find((v) => v.sha === "mech01")!.status).toBe("mechanical");
+    expect(verdicts.find((v) => v.sha === "real01")!.status).toBe("ok");
+    expect(verdicts.find((v) => v.sha === "mech02")!.status).toBe("mechanical");
+  });
+
+  test("mechanical commit preserves sha and message in verdict", () => {
+    const commits: CommitRecord[] = [
+      {
+        sha: "abc123",
+        message: "Post-release version bump\n\nBumped to 1.0.1-SNAPSHOT",
+        files: [],
+      },
+    ];
+    const verdicts = runChecks(commits, "v1.0.0", "v1.0.1");
+    expect(verdicts[0].sha).toBe("abc123");
+    expect(verdicts[0].message).toBe(
+      "Post-release version bump\n\nBumped to 1.0.1-SNAPSHOT"
+    );
   });
 });
