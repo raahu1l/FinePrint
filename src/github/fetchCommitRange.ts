@@ -32,6 +32,7 @@ import {
 
 const API_BASE = "https://api.github.com";
 const MAX_COMPARE_COMMITS = 250; // GitHub hard limit for the compare endpoint
+const BATCH_SIZE = 10; // Number of per-commit requests to fire in parallel
 
 /**
  * Parse `owner` and `repo` out of a GitHub URL.
@@ -150,6 +151,17 @@ interface GhCommitResponse {
 // ---------------------------------------------------------------------------
 
 /**
+ * Optional settings for fetchCommitRange, extending FetchOptions.
+ *
+ * @param onProgress  Called after each batch completes with the number of
+ *                    commits fetched so far and the total to fetch.
+ *                    Use this to show live progress in the UI.
+ */
+export interface FetchCommitRangeOptions extends FetchOptions {
+  onProgress?: (fetched: number, total: number) => void;
+}
+
+/**
  * Fetch structured commit + diff data for every commit reachable from `head`
  * but not from `base` (i.e., the commits introduced in a release).
  *
@@ -157,19 +169,24 @@ interface GhCommitResponse {
  * fetched.  The returned `cappedAt` field is set so the caller can display a
  * banner; no error is thrown.
  *
+ * Per-commit detail requests are issued in parallel batches of {@link BATCH_SIZE}
+ * (default 10) to balance throughput against rate-limit safety.  Commits are
+ * returned in the same order they appear in the compare response.
+ *
  * @param repoUrl  Full GitHub repo URL, e.g. `https://github.com/owner/repo`
  * @param base     Tag, branch, or SHA that marks the start of the range
  * @param head     Tag, branch, or SHA that marks the end of the range
- * @param options  Optional: `{ token }` for authenticated requests
+ * @param options  Optional: `{ token, onProgress }` for auth + progress updates
  * @returns        {@link CommitRangeResult} — commits plus optional cap metadata
  */
 export async function fetchCommitRange(
   repoUrl: string,
   base: string,
   head: string,
-  options: FetchOptions = {}
+  options: FetchCommitRangeOptions = {}
 ): Promise<CommitRangeResult> {
   const { owner, repo } = parseRepoUrl(repoUrl);
+  const { onProgress } = options;
   const get = buildFetcher(options);
 
   // ── Step 1: compare endpoint ──────────────────────────────────────────────
@@ -184,25 +201,38 @@ export async function fetchCommitRange(
   const shas = comparison.commits.map((c) => c.sha);
   const wasCapped = totalCommits > MAX_COMPARE_COMMITS;
 
-  // ── Step 2: per-commit detail (sequential to stay within rate limits) ─────
-  const records: CommitRecord[] = [];
+  // ── Step 2: per-commit detail (parallel batches) ──────────────────────────
+  // Slice the SHA list into chunks of BATCH_SIZE and await each chunk before
+  // starting the next, preventing burst traffic while still being much faster
+  // than fully-sequential fetching.  Results are stored by index so the final
+  // order always matches the original compare-response order.
+  const records: CommitRecord[] = new Array(shas.length);
+  let fetched = 0;
 
-  for (const sha of shas) {
-    const commitUrl = `${API_BASE}/repos/${owner}/${repo}/commits/${sha}`;
-    const detail = (await get(commitUrl)) as GhCommitResponse;
+  for (let i = 0; i < shas.length; i += BATCH_SIZE) {
+    const batchShas = shas.slice(i, i + BATCH_SIZE);
+    const batchResults = await Promise.all(
+      batchShas.map(async (sha, batchIndex) => {
+        const commitUrl = `${API_BASE}/repos/${owner}/${repo}/commits/${sha}`;
+        const detail = (await get(commitUrl)) as GhCommitResponse;
 
-    const files: CommitFile[] = (detail.files ?? []).map((f) => ({
-      filename: f.filename,
-      additions: f.additions,
-      deletions: f.deletions,
-      patch: f.patch ?? null,
-    }));
+        const files: CommitFile[] = (detail.files ?? []).map((f) => ({
+          filename: f.filename,
+          additions: f.additions,
+          deletions: f.deletions,
+          patch: f.patch ?? null,
+        }));
 
-    records.push({
-      sha: detail.sha,
-      message: detail.commit.message,
-      files,
-    });
+        return { index: i + batchIndex, record: { sha: detail.sha, message: detail.commit.message, files } };
+      })
+    );
+
+    for (const { index, record } of batchResults) {
+      records[index] = record;
+    }
+
+    fetched += batchResults.length;
+    onProgress?.(fetched, shas.length);
   }
 
   return {

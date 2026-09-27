@@ -9,6 +9,7 @@ import {
   pickRepresentativeFile,
   buildGitHubCompareUrl,
   buildReleaseNotesDraft,
+  extractSubject,
 } from "./diffUtils.js";
 import {
   buildReceiptRuns,
@@ -832,7 +833,7 @@ function CommitRow({
   base,
   head,
 }: CommitRowProps) {
-  const subject = verdict.message.split("\n")[0];
+  const subject = extractSubject(verdict.message);
   const totalAdd = allFiles.reduce((s, f) => s + f.additions, 0);
   const totalDel = allFiles.reduce((s, f) => s + f.deletions, 0);
   const statStr = `+${totalAdd} -${totalDel}`;
@@ -915,14 +916,18 @@ const DEFAULT_HEAD_TAG = "v0.2.0";
 
 interface InputScreenProps {
   onSubmit: (repoUrl: string, base: string, head: string) => void;
+  onValuesChange: (repoUrl: string, base: string, head: string) => void;
+  initialRepoUrl: string;
+  initialBase: string;
+  initialHead: string;
   loading: boolean;
   error: string | null;
 }
 
-function InputScreen({ onSubmit, loading, error }: InputScreenProps) {
-  const [repoUrl, setRepoUrl] = useState(DEFAULT_REPO);
-  const [base, setBase] = useState(DEFAULT_BASE_TAG);
-  const [head, setHead] = useState(DEFAULT_HEAD_TAG);
+function InputScreen({ onSubmit, onValuesChange, initialRepoUrl, initialBase, initialHead, loading, error }: InputScreenProps) {
+  const [repoUrl, setRepoUrl] = useState(initialRepoUrl);
+  const [base, setBase] = useState(initialBase);
+  const [head, setHead] = useState(initialHead);
   const [tags, setTags] = useState<string[]>([]);
   const [tagsLoading, setTagsLoading] = useState(false);
   const [tagsError, setTagsError] = useState<string | null>(null);
@@ -981,6 +986,11 @@ function InputScreen({ onSubmit, loading, error }: InputScreenProps) {
       clearTimeout(timer);
     };
   }, [repoUrl]);
+
+  // Propagate current values to App so they survive unmount (navigation away)
+  useEffect(() => {
+    onValuesChange(repoUrl, base, head);
+  }, [repoUrl, base, head, onValuesChange]);
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -1231,9 +1241,25 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [receiptData, setReceiptData] = useState<ReceiptData | null>(null);
 
+  // Persisted input values — seeded from defaults on first mount, then kept
+  // across "check another release" navigation so the user's last entries survive.
+  const [inputRepoUrl, setInputRepoUrl] = useState(DEFAULT_REPO);
+  const [inputBase, setInputBase] = useState(DEFAULT_BASE_TAG);
+  const [inputHead, setInputHead] = useState(DEFAULT_HEAD_TAG);
+
+  // Live fetch-progress for the loading screen
+  const [fetchProgress, setFetchProgress] = useState<{ fetched: number; total: number } | null>(null);
+
+  const handleValuesChange = useCallback((repoUrl: string, base: string, head: string) => {
+    setInputRepoUrl(repoUrl);
+    setInputBase(base);
+    setInputHead(head);
+  }, []);
+
   const handleCheck = useCallback(
     async (repoUrl: string, base: string, head: string) => {
       setError(null);
+      setFetchProgress(null);
       setScreen("loading");
 
       try {
@@ -1246,7 +1272,10 @@ export default function App() {
           repoUrl,
           base,
           head,
-          { token }
+          {
+            token,
+            onProgress: (fetched, total) => setFetchProgress({ fetched, total }),
+          }
         );
 
         // Run checks
@@ -1273,15 +1302,19 @@ export default function App() {
   const handleReset = useCallback(() => {
     setReceiptData(null);
     setError(null);
+    setFetchProgress(null);
     setScreen("input");
   }, []);
 
   if (screen === "loading") {
+    const progressLabel = fetchProgress
+      ? `FETCHED ${fetchProgress.fetched} OF ${fetchProgress.total} COMMITS…`
+      : "FETCHING COMMITS…";
     return (
       <div style={{ ...S.page, ...S.fadeIn }}>
         <div style={S.loadingCard}>
           <span style={S.loadingLabel}>FINEPRINT · RELEASE AUDIT</span>
-          <span style={S.loadingText}>FETCHING COMMITS…</span>
+          <span style={S.loadingText}>{progressLabel}</span>
           <div style={S.loadingTrack}>
             <div style={S.loadingBar} />
           </div>
@@ -1300,6 +1333,10 @@ export default function App() {
   return (
     <InputScreen
       onSubmit={handleCheck}
+      onValuesChange={handleValuesChange}
+      initialRepoUrl={inputRepoUrl}
+      initialBase={inputBase}
+      initialHead={inputHead}
       loading={false}
       error={error}
     />

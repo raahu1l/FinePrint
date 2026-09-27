@@ -13,6 +13,7 @@ import {
   pickRepresentativeFile,
   buildReleaseNotesDraft,
   buildGitHubCompareUrl,
+  extractSubject,
 } from "../src/ui/diffUtils.js";
 import type { UndisclosedDiff } from "../src/checks/areaMismatch.js";
 import type { CommitVerdict } from "../src/checks/types.js";
@@ -266,5 +267,59 @@ describe("buildReleaseNotesDraft", () => {
     const draft = buildReleaseNotesDraft([], "v1.0.0", "v1.0.1");
     expect(draft).toContain("## Release: v1.0.0 → v1.0.1");
     expect(draft).toContain("0 of 0 commits adjusted.");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractSubject — commit message subject extraction
+// ---------------------------------------------------------------------------
+
+describe("extractSubject", () => {
+  it("returns the first line of a normal single-line message", () => {
+    expect(extractSubject("fix: correct null check")).toBe("fix: correct null check");
+  });
+
+  it("returns only the first line of a multi-line message", () => {
+    const msg = "feat: new endpoint\n\nThis adds POST /api/v2/items.\n\nFixes #42";
+    expect(extractSubject(msg)).toBe("feat: new endpoint");
+  });
+
+  it("skips leading blank lines and returns the first non-empty line", () => {
+    // Some git tooling can produce messages with a leading blank line
+    const msg = "\nfeat: something useful\n\nbody text";
+    expect(extractSubject(msg)).toBe("feat: something useful");
+  });
+
+  it("skips multiple leading blank lines", () => {
+    const msg = "\n\n\nchore: cleanup\n\nbody";
+    expect(extractSubject(msg)).toBe("chore: cleanup");
+  });
+
+  it("handles Windows-style \\r\\n line endings", () => {
+    const msg = "fix: handle edge case\r\n\r\nbody paragraph";
+    // After trimEnd() the \r is stripped from the line end, giving "fix: handle edge case"
+    expect(extractSubject(msg)).toBe("fix: handle edge case");
+  });
+
+  it("returns '(no commit message)' for a truly empty message", () => {
+    expect(extractSubject("")).toBe("(no commit message)");
+  });
+
+  it("returns '(no commit message)' for a message with only whitespace", () => {
+    expect(extractSubject("   \n  \n\t")).toBe("(no commit message)");
+  });
+
+  it("returns '(no commit message)' for a message with only newlines", () => {
+    expect(extractSubject("\n\n\n")).toBe("(no commit message)");
+  });
+
+  it("does not trim leading whitespace from the subject itself (preserves indentation intent)", () => {
+    // trimEnd only — leading spaces on the subject line are kept
+    const msg = "  fix: indented subject";
+    expect(extractSubject(msg)).toBe("  fix: indented subject");
+  });
+
+  it("handles a message that is a single non-empty line with no newline", () => {
+    expect(extractSubject("refactor: extract helper")).toBe("refactor: extract helper");
   });
 });

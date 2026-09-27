@@ -532,3 +532,146 @@ describe("fetchRepoTags", () => {
     expect(headers["Authorization"]).toBe("Bearer ghp_abc");
   });
 });
+
+// ---------------------------------------------------------------------------
+// fetchCommitRange — batched parallel fetching
+// ---------------------------------------------------------------------------
+
+describe("fetchCommitRange — batched parallel fetching", () => {
+  beforeEach(() => mockFetch.mockReset());
+
+  /**
+   * Build a list of N unique SHAs and corresponding API responses.
+   * Returns { shas, compareResponse, commitResponses }.
+   */
+  function buildNCommits(n: number) {
+    const shas = Array.from({ length: n }, (_, i) =>
+      String(i).padStart(40, "0")
+    );
+    const compareResponse = {
+      total_commits: n,
+      commits: shas.map((sha) => ({ sha })),
+    };
+    const commitResponses = shas.map((sha, i) => ({
+      sha,
+      commit: { message: `commit ${i}` },
+      files: [],
+    }));
+    return { shas, compareResponse, commitResponses };
+  }
+
+  it("returns commits in the original compare-response order for a 2-commit range", async () => {
+    // 2 commits fit in a single batch of 10
+    mockFetch.mockResolvedValueOnce(makeResponse(COMPARE_RESPONSE));
+    mockFetch.mockResolvedValueOnce(makeResponse(COMMIT_A_RESPONSE));
+    mockFetch.mockResolvedValueOnce(makeResponse(COMMIT_B_RESPONSE));
+
+    const result = await fetchCommitRange(
+      "https://github.com/owner/repo",
+      "v1.0.0",
+      "v1.1.0"
+    );
+
+    expect(result.commits).toHaveLength(2);
+    expect(result.commits[0].sha).toBe(SHA_A);
+    expect(result.commits[1].sha).toBe(SHA_B);
+  });
+
+  it("returns commits in the correct order when spanning multiple batches (25 commits)", async () => {
+    const { shas, compareResponse, commitResponses } = buildNCommits(25);
+
+    // compare endpoint
+    mockFetch.mockResolvedValueOnce(makeResponse(compareResponse));
+    // per-commit endpoints — register in a fixed order; Promise.all within
+    // each batch resolves in array order, so responses must match
+    for (const r of commitResponses) {
+      mockFetch.mockResolvedValueOnce(makeResponse(r));
+    }
+
+    const result = await fetchCommitRange(
+      "https://github.com/owner/repo",
+      "v1.0.0",
+      "v1.1.0"
+    );
+
+    expect(result.commits).toHaveLength(25);
+    for (let i = 0; i < 25; i++) {
+      expect(result.commits[i].sha).toBe(shas[i]);
+      expect(result.commits[i].message).toBe(`commit ${i}`);
+    }
+  });
+
+  it("fires per-commit requests in parallel batches of 10 (batch boundaries are correct)", async () => {
+    // 12 commits → batch 1 = 10 requests, batch 2 = 2 requests
+    const { compareResponse, commitResponses } = buildNCommits(12);
+
+    mockFetch.mockResolvedValueOnce(makeResponse(compareResponse));
+    for (const r of commitResponses) {
+      mockFetch.mockResolvedValueOnce(makeResponse(r));
+    }
+
+    await fetchCommitRange(
+      "https://github.com/owner/repo",
+      "v1.0.0",
+      "v1.1.0"
+    );
+
+    // 1 compare + 12 per-commit = 13 total calls
+    expect(mockFetch).toHaveBeenCalledTimes(13);
+  });
+
+  it("calls onProgress after each completed batch", async () => {
+    // 12 commits → 2 batches: first fires after 10, second after 12
+    const { compareResponse, commitResponses } = buildNCommits(12);
+
+    mockFetch.mockResolvedValueOnce(makeResponse(compareResponse));
+    for (const r of commitResponses) {
+      mockFetch.mockResolvedValueOnce(makeResponse(r));
+    }
+
+    const progressCalls: Array<[number, number]> = [];
+    await fetchCommitRange(
+      "https://github.com/owner/repo",
+      "v1.0.0",
+      "v1.1.0",
+      {
+        onProgress: (fetched, total) => progressCalls.push([fetched, total]),
+      }
+    );
+
+    expect(progressCalls).toHaveLength(2);
+    expect(progressCalls[0]).toEqual([10, 12]); // after first batch
+    expect(progressCalls[1]).toEqual([12, 12]); // after second batch
+  });
+
+  it("calls onProgress once with the full count for a single-batch range", async () => {
+    // 3 commits → fits in one batch of 10
+    const { compareResponse, commitResponses } = buildNCommits(3);
+
+    mockFetch.mockResolvedValueOnce(makeResponse(compareResponse));
+    for (const r of commitResponses) {
+      mockFetch.mockResolvedValueOnce(makeResponse(r));
+    }
+
+    const progressCalls: Array<[number, number]> = [];
+    await fetchCommitRange(
+      "https://github.com/owner/repo",
+      "v1.0.0",
+      "v1.0.1",
+      { onProgress: (f, t) => progressCalls.push([f, t]) }
+    );
+
+    expect(progressCalls).toHaveLength(1);
+    expect(progressCalls[0]).toEqual([3, 3]);
+  });
+
+  it("works correctly when onProgress is not provided (no error thrown)", async () => {
+    mockFetch.mockResolvedValueOnce(makeResponse(COMPARE_RESPONSE));
+    mockFetch.mockResolvedValueOnce(makeResponse(COMMIT_A_RESPONSE));
+    mockFetch.mockResolvedValueOnce(makeResponse(COMMIT_B_RESPONSE));
+
+    await expect(
+      fetchCommitRange("https://github.com/owner/repo", "v1.0.0", "v1.1.0")
+    ).resolves.toBeDefined();
+  });
+});

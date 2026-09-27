@@ -116,6 +116,22 @@ export function buildGitHubCompareUrl(
  *   ---
  *   N of M commits adjusted.
  */
+/**
+ * Extract the commit subject (first non-empty line) from a raw commit message.
+ *
+ * Some commits have leading blank lines or use `\r\n` line endings; a naive
+ * `split("\n")[0]` on those returns `""`, causing the title to display as empty.
+ * This function trims each line and skips blanks so the real subject always shows.
+ * Returns `"(no commit message)"` when the message contains no non-empty lines.
+ */
+export function extractSubject(message: string): string {
+  const subject = message
+    .split("\n")
+    .map((l) => l.trimEnd())
+    .find((l) => l.trim() !== "");
+  return subject ?? "(no commit message)";
+}
+
 export function buildReleaseNotesDraft(
   verdicts: CommitVerdict[],
   base: string,
@@ -131,7 +147,7 @@ export function buildReleaseNotesDraft(
   if (ok.length > 0) {
     lines.push(`### ✅ Verified (${ok.length})`);
     for (const v of ok) {
-      const subject = v.message.split("\n")[0];
+      const subject = extractSubject(v.message);
       lines.push(`- ${subject}`);
     }
     lines.push("");
@@ -140,7 +156,7 @@ export function buildReleaseNotesDraft(
   if (adjusted.length > 0) {
     lines.push(`### ⚠️ Adjusted (${adjusted.length})`);
     for (const v of adjusted) {
-      const subject = v.message.split("\n")[0];
+      const subject = extractSubject(v.message);
       lines.push(`- ${subject}`);
       for (const reason of v.reasons) {
         lines.push(`  Reason: ${reason}`);

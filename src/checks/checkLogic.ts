@@ -50,7 +50,13 @@ const MECHANICAL_PATTERNS: RegExp[] = [
  * Exported so it can be unit-tested independently.
  */
 export function isMechanicalCommit(message: string): boolean {
-  const subject = message.split("\n")[0];
+  // Use the first non-empty line so messages with leading blank lines are
+  // handled correctly (same logic as extractSubject in diffUtils).
+  const subject =
+    message
+      .split("\n")
+      .map((l) => l.trimEnd())
+      .find((l) => l.trim() !== "") ?? "";
   return MECHANICAL_PATTERNS.some((re) => re.test(subject));
 }
 
