@@ -8,6 +8,29 @@
       *, *::before, *::after { box-sizing: border-box; }
       html, body, #root { margin: 0; padding: 0; height: 100%; }
       body { background: #f0f0f0; }
+
+      /* FinePrint keyframe animations */
+      @keyframes fp-fadein {
+        from { opacity: 0; transform: translateY(6px); }
+        to   { opacity: 1; transform: translateY(0); }
+      }
+      @keyframes fp-pulse {
+        0%, 100% { opacity: 1; }
+        50%       { opacity: 0.35; }
+      }
+      @keyframes fp-slide {
+        0%   { left: -40%; }
+        100% { left: 100%; }
+      }
+
+      /* Focus ring for accessible inputs/selects */
+      input:focus, select:focus {
+        border-color: #555 !important;
+        box-shadow: 0 0 0 2px rgba(0,0,0,0.06);
+      }
+
+      /* Disabled select appearance */
+      select:disabled { opacity: 0.5; }
     </style>
   </head>
   <body>

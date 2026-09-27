@@ -83,18 +83,41 @@ describe("mergeVerdicts — one check fires", () => {
     expect(verdict.undisclosedDiff).toEqual(FLAGGED_AREA.undisclosedDiff);
   });
 
-  test("semver check alone → adjusted, no undisclosedDiff", () => {
+  test("semver check alone with no files → adjusted, undisclosedDiff is undefined (no files to show)", () => {
+    // BASE_COMMIT has no files — nothing to synthesise from
     const verdict = mergeVerdicts(BASE_COMMIT, OK_AREA, FLAGGED_SEMVER, OK_DEP);
     expect(verdict.status).toBe("adjusted");
     expect(verdict.reasons).toEqual(FLAGGED_SEMVER.reasons);
     expect(verdict.undisclosedDiff).toBeUndefined();
   });
 
-  test("dep check alone → adjusted, no undisclosedDiff", () => {
-    const verdict = mergeVerdicts(BASE_COMMIT, OK_AREA, OK_SEMVER, FLAGGED_DEP);
+  test("semver check alone with files → adjusted, undisclosedDiff synthesised from commit files", () => {
+    const commitWithFiles: CommitRecord = {
+      sha: "sha002",
+      message: "fix: something",
+      files: [
+        { filename: "src/index.ts", additions: 3, deletions: 1, patch: "-export function foo() {}\n+export function foo(x: number) {}" },
+      ],
+    };
+    const verdict = mergeVerdicts(commitWithFiles, OK_AREA, FLAGGED_SEMVER, OK_DEP);
     expect(verdict.status).toBe("adjusted");
-    expect(verdict.reasons).toEqual(FLAGGED_DEP.reasons);
-    expect(verdict.undisclosedDiff).toBeUndefined();
+    expect(verdict.undisclosedDiff).toBeDefined();
+    expect(verdict.undisclosedDiff!.files).toContain("src/index.ts");
+    expect(verdict.undisclosedDiff!.sampleSnippet).toContain("export function foo");
+  });
+
+  test("dep check alone with files → adjusted, undisclosedDiff synthesised", () => {
+    const commitWithFiles: CommitRecord = {
+      sha: "sha003",
+      message: "fix: bump dep",
+      files: [
+        { filename: "package.json", additions: 1, deletions: 1, patch: '-  "express": "1.0.0"\n+  "express": "2.0.0"' },
+      ],
+    };
+    const verdict = mergeVerdicts(commitWithFiles, OK_AREA, OK_SEMVER, FLAGGED_DEP);
+    expect(verdict.status).toBe("adjusted");
+    expect(verdict.undisclosedDiff).toBeDefined();
+    expect(verdict.undisclosedDiff!.files).toContain("package.json");
   });
 });
 
@@ -142,7 +165,8 @@ describe("mergeVerdicts — multiple checks fire (the key integration test)", ()
     ).toBe(false);
   });
 
-  test("semver + dep fire, area does not → no undisclosedDiff", () => {
+  test("semver + dep fire, area does not, no files → no undisclosedDiff (nothing to synthesise)", () => {
+    // BASE_COMMIT has no files
     const verdict = mergeVerdicts(
       BASE_COMMIT,
       OK_AREA,
@@ -154,6 +178,23 @@ describe("mergeVerdicts — multiple checks fire (the key integration test)", ()
     expect(verdict.reasons).toHaveLength(
       FLAGGED_SEMVER.reasons.length + FLAGGED_DEP.reasons.length
     );
+  });
+
+  test("semver + dep fire, area does not, with files → undisclosedDiff synthesised", () => {
+    const commitWithFiles: CommitRecord = {
+      sha: "sha004",
+      message: "refactor: change signature",
+      files: [
+        { filename: "src/api.ts", additions: 2, deletions: 2, patch: "-export function get() {}\n+export function get(opts: Options) {}" },
+        { filename: "package.json", additions: 1, deletions: 1, patch: '-  "axios": "0.x"\n+  "axios": "1.x"' },
+      ],
+    };
+    const verdict = mergeVerdicts(commitWithFiles, OK_AREA, FLAGGED_SEMVER, FLAGGED_DEP);
+    expect(verdict.status).toBe("adjusted");
+    expect(verdict.undisclosedDiff).toBeDefined();
+    // Synthesised diff should cover the evidence files
+    expect(verdict.undisclosedDiff!.files.length).toBeGreaterThan(0);
+    expect(verdict.undisclosedDiff!.sampleSnippet).not.toBeNull();
   });
 });
 

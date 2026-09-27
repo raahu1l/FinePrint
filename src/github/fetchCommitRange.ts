@@ -9,20 +9,20 @@
  * 1. Parse `owner` and `repo` from the URL.
  * 2. GET /repos/{owner}/{repo}/compare/{base}...{head} → list of commit SHAs.
  * 3. For every SHA, GET /repos/{owner}/{repo}/commits/{sha} → message + files.
- * 4. Return an array of CommitRecord objects.
+ * 4. Return a CommitRangeResult object.
  *
- * The compare endpoint returns at most 250 commits.  For ranges larger than
- * that you would need to paginate via the commits list endpoint; this module
- * documents that limitation clearly and throws a descriptive error so callers
- * can handle it explicitly.
+ * When the range spans more than 250 commits (GitHub's hard limit for the
+ * compare endpoint), only the most-recent 250 are fetched and analysed.
+ * The returned `cappedAt` field signals this to the caller so a banner can be
+ * shown; no error is thrown.
  */
 
 import {
   CommitFile,
+  CommitRangeResult,
   CommitRecord,
   FetchOptions,
   GitHubApiError,
-  OversizedRangeError,
   RateLimitError,
 } from "./types.js";
 
@@ -153,18 +153,22 @@ interface GhCommitResponse {
  * Fetch structured commit + diff data for every commit reachable from `head`
  * but not from `base` (i.e., the commits introduced in a release).
  *
+ * When the range spans more than 250 commits, only the most-recent 250 are
+ * fetched.  The returned `cappedAt` field is set so the caller can display a
+ * banner; no error is thrown.
+ *
  * @param repoUrl  Full GitHub repo URL, e.g. `https://github.com/owner/repo`
  * @param base     Tag, branch, or SHA that marks the start of the range
  * @param head     Tag, branch, or SHA that marks the end of the range
  * @param options  Optional: `{ token }` for authenticated requests
- * @returns        Array of {@link CommitRecord}, one entry per commit
+ * @returns        {@link CommitRangeResult} — commits plus optional cap metadata
  */
 export async function fetchCommitRange(
   repoUrl: string,
   base: string,
   head: string,
   options: FetchOptions = {}
-): Promise<CommitRecord[]> {
+): Promise<CommitRangeResult> {
   const { owner, repo } = parseRepoUrl(repoUrl);
   const get = buildFetcher(options);
 
@@ -174,12 +178,11 @@ export async function fetchCommitRange(
 
   const comparison = (await get(compareUrl)) as GhCompareResponse;
 
-  if (comparison.total_commits > MAX_COMPARE_COMMITS) {
-    // Surface the limitation rather than silently returning partial data.
-    throw new OversizedRangeError(base, head, comparison.total_commits);
-  }
-
+  const totalCommits = comparison.total_commits;
+  // GitHub caps the commits array at 250 regardless of total_commits.
+  // We use whatever the API returned — no truncation needed on our side.
   const shas = comparison.commits.map((c) => c.sha);
+  const wasCapped = totalCommits > MAX_COMPARE_COMMITS;
 
   // ── Step 2: per-commit detail (sequential to stay within rate limits) ─────
   const records: CommitRecord[] = [];
@@ -202,7 +205,11 @@ export async function fetchCommitRange(
     });
   }
 
-  return records;
+  return {
+    commits: records,
+    totalCommits,
+    ...(wasCapped ? { cappedAt: MAX_COMPARE_COMMITS } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------

@@ -16,7 +16,7 @@ import {
   buildFetcher,
   fetchRepoTags,
 } from "../src/github/fetchCommitRange.js";
-import { RateLimitError, GitHubApiError, OversizedRangeError } from "../src/github/types.js";
+import { RateLimitError, GitHubApiError } from "../src/github/types.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -225,19 +225,39 @@ describe("fetchCommitRange", () => {
     mockFetch.mockResolvedValueOnce(makeResponse(COMMIT_B_RESPONSE));
   }
 
-  it("returns one CommitRecord per commit in the range", async () => {
+  it("returns a CommitRangeResult with commits array", async () => {
     setupHappyPath();
     const result = await fetchCommitRange(
       "https://github.com/owner/repo",
       "v1.0.0",
       "v1.1.0"
     );
-    expect(result).toHaveLength(2);
+    expect(result.commits).toHaveLength(2);
+  });
+
+  it("returns totalCommits from the compare response", async () => {
+    setupHappyPath();
+    const result = await fetchCommitRange(
+      "https://github.com/owner/repo",
+      "v1.0.0",
+      "v1.1.0"
+    );
+    expect(result.totalCommits).toBe(2);
+  });
+
+  it("cappedAt is undefined when range is within the 250-commit limit", async () => {
+    setupHappyPath();
+    const result = await fetchCommitRange(
+      "https://github.com/owner/repo",
+      "v1.0.0",
+      "v1.1.0"
+    );
+    expect(result.cappedAt).toBeUndefined();
   });
 
   it("record shape: sha and message are present", async () => {
     setupHappyPath();
-    const [first] = await fetchCommitRange(
+    const { commits: [first] } = await fetchCommitRange(
       "https://github.com/owner/repo",
       "v1.0.0",
       "v1.1.0"
@@ -248,7 +268,7 @@ describe("fetchCommitRange", () => {
 
   it("record shape: files contain filename, additions, deletions, patch", async () => {
     setupHappyPath();
-    const [first] = await fetchCommitRange(
+    const { commits: [first] } = await fetchCommitRange(
       "https://github.com/owner/repo",
       "v1.0.0",
       "v1.1.0"
@@ -264,7 +284,7 @@ describe("fetchCommitRange", () => {
 
   it("sets patch to null when GitHub omits it", async () => {
     setupHappyPath();
-    const [, second] = await fetchCommitRange(
+    const { commits: [, second] } = await fetchCommitRange(
       "https://github.com/owner/repo",
       "v1.0.0",
       "v1.1.0"
@@ -285,7 +305,7 @@ describe("fetchCommitRange", () => {
       "v1.0.0",
       "v1.0.1"
     );
-    expect(result[0].files).toEqual([]);
+    expect(result.commits[0].files).toEqual([]);
   });
 
   it("calls the compare endpoint with the correct URL", async () => {
@@ -319,67 +339,92 @@ describe("fetchCommitRange", () => {
 });
 
 // ---------------------------------------------------------------------------
+// fetchCommitRange — large-range cap (graceful 250 handling)
+// ---------------------------------------------------------------------------
+
+describe("fetchCommitRange — large-range graceful cap", () => {
+  beforeEach(() => mockFetch.mockReset());
+
+  it("does NOT throw when total_commits exceeds 250", async () => {
+    // GitHub returns total_commits=300 but only 2 commit SHAs in the array
+    mockFetch.mockResolvedValueOnce(
+      makeResponse({ total_commits: 300, commits: [{ sha: SHA_A }, { sha: SHA_B }] })
+    );
+    mockFetch.mockResolvedValueOnce(makeResponse(COMMIT_A_RESPONSE));
+    mockFetch.mockResolvedValueOnce(makeResponse(COMMIT_B_RESPONSE));
+
+    await expect(
+      fetchCommitRange("https://github.com/owner/repo", "v1.0.0", "v2.0.0")
+    ).resolves.toBeDefined();
+  });
+
+  it("returns cappedAt=250 when total_commits > 250", async () => {
+    mockFetch.mockResolvedValueOnce(
+      makeResponse({ total_commits: 300, commits: [{ sha: SHA_A }] })
+    );
+    mockFetch.mockResolvedValueOnce(makeResponse(COMMIT_A_RESPONSE));
+
+    const result = await fetchCommitRange(
+      "https://github.com/owner/repo",
+      "v1.0.0",
+      "v2.0.0"
+    );
+    expect(result.cappedAt).toBe(250);
+  });
+
+  it("returns totalCommits=300 (the real count) when capped", async () => {
+    mockFetch.mockResolvedValueOnce(
+      makeResponse({ total_commits: 300, commits: [{ sha: SHA_A }] })
+    );
+    mockFetch.mockResolvedValueOnce(makeResponse(COMMIT_A_RESPONSE));
+
+    const result = await fetchCommitRange(
+      "https://github.com/owner/repo",
+      "v1.0.0",
+      "v2.0.0"
+    );
+    expect(result.totalCommits).toBe(300);
+  });
+
+  it("still returns the commits GitHub provided when capped", async () => {
+    mockFetch.mockResolvedValueOnce(
+      makeResponse({ total_commits: 999, commits: [{ sha: SHA_A }, { sha: SHA_B }] })
+    );
+    mockFetch.mockResolvedValueOnce(makeResponse(COMMIT_A_RESPONSE));
+    mockFetch.mockResolvedValueOnce(makeResponse(COMMIT_B_RESPONSE));
+
+    const result = await fetchCommitRange(
+      "https://github.com/owner/repo",
+      "v1.0.0",
+      "v9.0.0"
+    );
+    expect(result.commits).toHaveLength(2);
+    expect(result.cappedAt).toBe(250);
+    expect(result.totalCommits).toBe(999);
+  });
+
+  it("cappedAt is undefined when total_commits is exactly 250", async () => {
+    mockFetch.mockResolvedValueOnce(
+      makeResponse({ total_commits: 250, commits: [{ sha: SHA_A }] })
+    );
+    mockFetch.mockResolvedValueOnce(makeResponse(COMMIT_A_RESPONSE));
+
+    const result = await fetchCommitRange(
+      "https://github.com/owner/repo",
+      "v1.0.0",
+      "v2.0.0"
+    );
+    expect(result.cappedAt).toBeUndefined();
+    expect(result.totalCommits).toBe(250);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // fetchCommitRange — error / edge cases
 // ---------------------------------------------------------------------------
 
 describe("fetchCommitRange — error cases", () => {
   beforeEach(() => mockFetch.mockReset());
-
-  it("throws OversizedRangeError when total_commits exceeds 250", async () => {
-    mockFetch.mockResolvedValueOnce(
-      makeResponse({ total_commits: 300, commits: [] })
-    );
-    await expect(
-      fetchCommitRange("https://github.com/owner/repo", "v1.0.0", "v2.0.0")
-    ).rejects.toBeInstanceOf(OversizedRangeError);
-  });
-
-  it("OversizedRangeError carries base, head, and totalCommits", async () => {
-    mockFetch.mockResolvedValueOnce(
-      makeResponse({ total_commits: 300, commits: [] })
-    );
-    let err: OversizedRangeError | undefined;
-    try {
-      await fetchCommitRange("https://github.com/owner/repo", "v1.0.0", "v2.0.0");
-    } catch (e) {
-      err = e as OversizedRangeError;
-    }
-    expect(err!.base).toBe("v1.0.0");
-    expect(err!.head).toBe("v2.0.0");
-    expect(err!.totalCommits).toBe(300);
-  });
-
-  it("OversizedRangeError is caught and produces the friendly UI message", async () => {
-    // Simulate the transform that App.handleCheck applies when it catches the error.
-    const FRIENDLY_MESSAGE =
-      "This range spans too many commits — FinePrint checks one release at a time. Try comparing two adjacent tags instead.";
-
-    mockFetch.mockResolvedValueOnce(
-      makeResponse({ total_commits: 999, commits: [] })
-    );
-    let caught: unknown;
-    try {
-      await fetchCommitRange("https://github.com/owner/repo", "v0.1.0", "v9.0.0");
-    } catch (e) {
-      caught = e;
-    }
-
-    // The App catches OversizedRangeError and substitutes the friendly message —
-    // verify that the caught error is the right type so the branch is taken.
-    expect(caught).toBeInstanceOf(OversizedRangeError);
-
-    // Reproduce the exact App.handleCheck transform:
-    const friendly =
-      caught instanceof OversizedRangeError
-        ? FRIENDLY_MESSAGE
-        : caught instanceof Error
-          ? caught.message
-          : String(caught);
-
-    expect(friendly).toBe(FRIENDLY_MESSAGE);
-    // The raw technical message is NOT shown to the user.
-    expect(friendly).not.toMatch(/exceeds the GitHub compare endpoint limit/);
-  });
 
   it("surfaces RateLimitError from the compare call", async () => {
     mockFetch.mockResolvedValueOnce(

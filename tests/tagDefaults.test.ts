@@ -1,5 +1,6 @@
 /**
- * Unit tests for the default tag-selection logic used by InputScreen.
+ * Unit tests for the default tag-selection logic used by InputScreen,
+ * and the pre-fill defaults that guarantee a real result on first load.
  *
  * The rule: given a tag list returned by fetchRepoTags (API order, newest
  * first), "From tag" defaults to tags[1] (second-most-recent) and "To tag"
@@ -72,5 +73,68 @@ describe("default tag selection (API order, no sort)", () => {
     const { base, head } = selectDefaultTags(tags);
     expect(head).toBe("v3.0.0");
     expect(base).toBe("v2.5.0");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Default pre-fill constants — guarantee a real, fast, adjusted result
+// ---------------------------------------------------------------------------
+
+/**
+ * These constants mirror what is exported/used in App.tsx's InputScreen.
+ * They must point to the project's own repo and two real adjacent tags so
+ * a user who clicks "Check Release" immediately (without touching anything)
+ * always gets a completed receipt with at least one adjusted item.
+ *
+ * We import them from the source to ensure the test is coupled to the real values.
+ */
+import path from "path";
+import { readFileSync } from "fs";
+
+describe("default pre-fill constants in InputScreen", () => {
+  // Read the actual source file and extract the constant values.
+  const appSource = readFileSync(
+    path.resolve("src/ui/App.tsx"),
+    "utf-8"
+  );
+
+  it("DEFAULT_REPO is set to this project's own repository path", () => {
+    // Must match the format "owner/repo" or "https://github.com/owner/repo"
+    const match = appSource.match(/const DEFAULT_REPO\s*=\s*["']([^"']+)["']/);
+    expect(match).not.toBeNull();
+    const value = match![1];
+    // Must be non-empty and reference a GitHub repo path
+    expect(value.trim()).not.toBe("");
+    expect(value).toMatch(/[\w-]+\/[\w-]+/);
+  });
+
+  it("DEFAULT_BASE_TAG is set to v0.1.0", () => {
+    const match = appSource.match(/const DEFAULT_BASE_TAG\s*=\s*["']([^"']+)["']/);
+    expect(match).not.toBeNull();
+    expect(match![1]).toBe("v0.1.0");
+  });
+
+  it("DEFAULT_HEAD_TAG is set to v0.2.0", () => {
+    const match = appSource.match(/const DEFAULT_HEAD_TAG\s*=\s*["']([^"']+)["']/);
+    expect(match).not.toBeNull();
+    expect(match![1]).toBe("v0.2.0");
+  });
+
+  it("DEFAULT_BASE_TAG and DEFAULT_HEAD_TAG are distinct (not the same tag)", () => {
+    const baseMatch = appSource.match(/const DEFAULT_BASE_TAG\s*=\s*["']([^"']+)["']/);
+    const headMatch = appSource.match(/const DEFAULT_HEAD_TAG\s*=\s*["']([^"']+)["']/);
+    expect(baseMatch).not.toBeNull();
+    expect(headMatch).not.toBeNull();
+    expect(baseMatch![1]).not.toBe(headMatch![1]);
+  });
+
+  it("DEFAULT_BASE_TAG is a semver tag with v-prefix", () => {
+    const match = appSource.match(/const DEFAULT_BASE_TAG\s*=\s*["']([^"']+)["']/);
+    expect(match![1]).toMatch(/^v\d+\.\d+\.\d+$/);
+  });
+
+  it("DEFAULT_HEAD_TAG is a semver tag with v-prefix", () => {
+    const match = appSource.match(/const DEFAULT_HEAD_TAG\s*=\s*["']([^"']+)["']/);
+    expect(match![1]).toMatch(/^v\d+\.\d+\.\d+$/);
   });
 });

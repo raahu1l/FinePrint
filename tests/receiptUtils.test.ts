@@ -2,11 +2,12 @@
  * tests/receiptUtils.test.ts
  *
  * Unit tests for the pure receipt-rendering utilities:
+ *   - sortVerdictsForDisplay: adjusted-first sort order
  *   - buildReceiptRuns: collapse logic for consecutive ok/mechanical runs
  *   - computeHealthCounts: routine vs. flagged tallying for the health bar
  */
 
-import { buildReceiptRuns, computeHealthCounts } from "../src/ui/receiptUtils.js";
+import { buildReceiptRuns, computeHealthCounts, sortVerdictsForDisplay } from "../src/ui/receiptUtils.js";
 import type { CommitVerdict } from "../src/checks/types.js";
 
 // ---------------------------------------------------------------------------
@@ -140,6 +141,74 @@ describe("buildReceiptRuns — order preservation", () => {
     if (runs[1].kind === "group")
       expect(runs[1].verdicts.map((v) => v.sha)).toEqual(["2", "3", "4"]);
     if (runs[2].kind === "single") expect(runs[2].verdict.sha).toBe("5");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sortVerdictsForDisplay — adjusted-first sort order
+// ---------------------------------------------------------------------------
+
+describe("sortVerdictsForDisplay — adjusted items appear before routine items", () => {
+  test("empty array → empty array", () => {
+    expect(sortVerdictsForDisplay([])).toEqual([]);
+  });
+
+  test("all adjusted → same order preserved", () => {
+    const input = [adj("a"), adj("b"), adj("c")];
+    const result = sortVerdictsForDisplay(input);
+    expect(result.map((v) => v.sha)).toEqual(["a", "b", "c"]);
+  });
+
+  test("all ok → same order preserved", () => {
+    const input = [ok("a"), ok("b"), ok("c")];
+    const result = sortVerdictsForDisplay(input);
+    expect(result.map((v) => v.sha)).toEqual(["a", "b", "c"]);
+  });
+
+  test("mixed: adjusted items come first in their original chronological order", () => {
+    // Input: ok, adj, ok, adj, ok
+    const input = [ok("1"), adj("2"), ok("3"), adj("4"), ok("5")];
+    const result = sortVerdictsForDisplay(input);
+    // adjusted items (2, 4) should come first, then routine (1, 3, 5)
+    expect(result.map((v) => v.sha)).toEqual(["2", "4", "1", "3", "5"]);
+  });
+
+  test("adjusted items preserve their relative chronological order", () => {
+    const input = [adj("z"), ok("a"), adj("m"), ok("b")];
+    const result = sortVerdictsForDisplay(input);
+    // z and m are adjusted; z came before m in the original list → should stay that way
+    const adjustedShas = result.filter((v) => v.status === "adjusted").map((v) => v.sha);
+    expect(adjustedShas).toEqual(["z", "m"]);
+  });
+
+  test("routine items preserve their relative chronological order", () => {
+    const input = [adj("x"), ok("a"), mech("b"), ok("c")];
+    const result = sortVerdictsForDisplay(input);
+    const routineShas = result.filter((v) => v.status !== "adjusted").map((v) => v.sha);
+    expect(routineShas).toEqual(["a", "b", "c"]);
+  });
+
+  test("all adjusted first + all routine last after sort → buildReceiptRuns produces all singles then one group", () => {
+    // After sort: adj, adj, ok, ok, ok (routine forms a group of 3 at bottom)
+    const input = [ok("1"), adj("2"), ok("3"), adj("4"), ok("5")];
+    const sorted = sortVerdictsForDisplay(input);
+    const runs = buildReceiptRuns(sorted);
+    // Expect: single(2), single(4), group([1,3,5])
+    expect(runs).toHaveLength(3);
+    expect(runs[0].kind).toBe("single");
+    if (runs[0].kind === "single") expect(runs[0].verdict.sha).toBe("2");
+    expect(runs[1].kind).toBe("single");
+    if (runs[1].kind === "single") expect(runs[1].verdict.sha).toBe("4");
+    expect(runs[2].kind).toBe("group");
+    if (runs[2].kind === "group") expect(runs[2].verdicts.map((v) => v.sha)).toEqual(["1", "3", "5"]);
+  });
+
+  test("mechanical commits are treated as routine and appear after adjusted", () => {
+    const input = [mech("a"), adj("b"), mech("c")];
+    const result = sortVerdictsForDisplay(input);
+    expect(result[0].sha).toBe("b"); // adjusted first
+    expect(result[1].sha).toBe("a"); // then mechanical in original order
+    expect(result[2].sha).toBe("c");
   });
 });
 

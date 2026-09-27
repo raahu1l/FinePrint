@@ -1,6 +1,5 @@
 import React, { useState, useCallback, useEffect } from "react";
 import { fetchCommitRange, parseRepoUrl, fetchRepoTags } from "../github/fetchCommitRange.js";
-import { OversizedRangeError } from "../github/types.js";
 import { runChecks } from "../checks/checkLogic.js";
 import type { CommitVerdict } from "../checks/types.js";
 import type { UndisclosedDiff } from "../checks/areaMismatch.js";
@@ -14,6 +13,7 @@ import {
 import {
   buildReceiptRuns,
   computeHealthCounts,
+  sortVerdictsForDisplay,
 } from "./receiptUtils.js";
 
 // ---------------------------------------------------------------------------
@@ -22,6 +22,9 @@ import {
 
 const MONO = '"Courier New", Courier, monospace';
 const SANS = '-apple-system, "Segoe UI", system-ui, sans-serif';
+
+// Spacing scale: 4 | 8 | 12 | 16 | 20 | 24 | 32 | 40 | 48
+// All padding/margin values below are snapped to this scale.
 
 const S = {
   // ── Page shell ─────────────────────────────────────────────────────────────
@@ -39,7 +42,7 @@ const S = {
     background: "#fff",
     border: "1px solid #d0d0d0",
     width: "100%",
-    maxWidth: 640,
+    maxWidth: 600,
     padding: "40px 48px",
   } as React.CSSProperties,
 
@@ -48,60 +51,67 @@ const S = {
     display: "flex",
     justifyContent: "space-between",
     alignItems: "flex-start",
-    marginBottom: 4,
+    marginBottom: 8,
   } as React.CSSProperties,
 
   inputTitle: {
     fontFamily: SANS,
-    fontSize: 32,
-    fontWeight: 700,
+    fontSize: 30,
+    fontWeight: 800,
     color: "#111",
     margin: 0,
+    letterSpacing: "-0.02em",
   } as React.CSSProperties,
 
   auditBadge: {
     fontFamily: MONO,
     fontSize: 10,
     color: "#555",
-    border: "1px solid #aaa",
-    padding: "3px 8px",
-    marginTop: 6,
-    letterSpacing: "0.04em",
+    border: "1px solid #bbb",
+    padding: "4px 8px",
+    marginTop: 4,
+    letterSpacing: "0.06em",
+    background: "#f7f7f7",
+    whiteSpace: "nowrap" as const,
   } as React.CSSProperties,
 
   inputSubtitle: {
     fontFamily: SANS,
     fontSize: 14,
     color: "#3b82d4",
-    marginTop: 2,
-    marginBottom: 28,
+    marginTop: 4,
+    marginBottom: 32,
+    lineHeight: 1.5,
   } as React.CSSProperties,
 
   label: {
     display: "block",
-    fontSize: 12,
-    fontWeight: 600,
-    color: "#333",
+    fontSize: 11,
+    fontWeight: 700,
+    color: "#444",
     marginBottom: 6,
-    letterSpacing: "0.02em",
+    letterSpacing: "0.06em",
+    textTransform: "uppercase" as const,
   } as React.CSSProperties,
 
   textInput: {
     width: "100%",
     boxSizing: "border-box" as const,
     border: "1px solid #ccc",
-    padding: "9px 12px",
-    fontSize: 14,
+    padding: "10px 12px",
+    fontSize: 13,
     fontFamily: MONO,
     color: "#222",
     outline: "none",
+    transition: "border-color 0.15s",
   } as React.CSSProperties,
 
   hint: {
     fontSize: 12,
-    color: "#3b82d4",
-    marginTop: 5,
-    marginBottom: 20,
+    color: "#888",
+    marginTop: 6,
+    marginBottom: 24,
+    lineHeight: 1.5,
   } as React.CSSProperties,
 
   tagRow: {
@@ -117,14 +127,15 @@ const S = {
   select: {
     width: "100%",
     border: "1px solid #ccc",
-    padding: "9px 12px",
-    fontSize: 14,
+    padding: "10px 12px",
+    fontSize: 13,
     fontFamily: SANS,
     color: "#222",
     background: "#fff",
     cursor: "pointer",
     appearance: "auto" as const,
     outline: "none",
+    transition: "border-color 0.15s",
   } as React.CSSProperties,
 
   checkBtn: {
@@ -134,22 +145,25 @@ const S = {
     background: "#111",
     color: "#fff",
     border: "none",
-    fontFamily: SANS,
-    fontSize: 13,
+    fontFamily: MONO,
+    fontSize: 12,
     fontWeight: 700,
-    letterSpacing: "0.1em",
+    letterSpacing: "0.12em",
     cursor: "pointer",
     textTransform: "uppercase" as const,
+    transition: "background 0.15s, opacity 0.15s",
   } as React.CSSProperties,
 
   inputFooter: {
     display: "flex",
     justifyContent: "space-between",
-    marginTop: 28,
+    marginTop: 32,
+    paddingTop: 16,
+    borderTop: "1px dashed #e0e0e0",
     fontFamily: MONO,
     fontSize: 10,
-    color: "#3b82d4",
-    letterSpacing: "0.04em",
+    color: "#aaa",
+    letterSpacing: "0.06em",
   } as React.CSSProperties,
 
   errorBox: {
@@ -159,6 +173,20 @@ const S = {
     padding: "10px 14px",
     fontSize: 13,
     marginBottom: 16,
+    lineHeight: 1.5,
+  } as React.CSSProperties,
+
+  // ── Large-range banner ─────────────────────────────────────────────────────
+  largeBanner: {
+    background: "#fffbea",
+    border: "1px solid #e6c84a",
+    color: "#5a4000",
+    padding: "8px 14px",
+    fontSize: 12,
+    fontFamily: MONO,
+    marginBottom: 12,
+    letterSpacing: "0.02em",
+    lineHeight: 1.5,
   } as React.CSSProperties,
 
   // ── Receipt screen ─────────────────────────────────────────────────────────
@@ -168,7 +196,7 @@ const S = {
     display: "flex",
     flexDirection: "column" as const,
     alignItems: "center",
-    padding: "32px 16px 0",
+    padding: "40px 16px 0",
     fontFamily: MONO,
   } as React.CSSProperties,
 
@@ -176,17 +204,18 @@ const S = {
     background: "#fff",
     width: "100%",
     maxWidth: 560,
-    padding: "24px 32px 0",
+    padding: "28px 36px 0",
     border: "1px solid #d8d8d8",
     position: "relative" as const,
   } as React.CSSProperties,
 
+  // Tiny, muted receipt ID — barely visible
   receiptMeta: {
     textAlign: "center" as const,
-    fontSize: 10,
-    color: "#999",
+    fontSize: 9,
+    color: "#ccc",
     letterSpacing: "0.08em",
-    marginBottom: 8,
+    marginBottom: 12,
   } as React.CSSProperties,
 
   receiptVersion: {
@@ -208,13 +237,26 @@ const S = {
 
   dashedDivider: {
     borderTop: "1px dashed #bbb",
-    margin: "10px 0",
+    margin: "12px 0",
   } as React.CSSProperties,
 
   // ── Commit row ─────────────────────────────────────────────────────────────
-  commitRow: {
-    padding: "10px 0",
+  // Adjusted rows get a red left border; routine rows get a neutral one
+  commitRowAdjusted: {
+    padding: "10px 10px 10px 12px",
     borderBottom: "1px dashed #ddd",
+    borderLeft: "3px solid #cc0000",
+    marginLeft: 0,
+    marginBottom: 4,
+    background: "#fff",
+  } as React.CSSProperties,
+
+  commitRowRoutine: {
+    padding: "10px 10px 10px 12px",
+    borderBottom: "1px dashed #ddd",
+    borderLeft: "3px solid #e0e0e0",
+    marginLeft: 0,
+    background: "#fff",
   } as React.CSSProperties,
 
   commitRowTop: {
@@ -229,6 +271,7 @@ const S = {
     flex: 1,
     lineHeight: 1.45,
     wordBreak: "break-word" as const,
+    fontWeight: 500,
   } as React.CSSProperties,
 
   commitStat: {
@@ -249,7 +292,7 @@ const S = {
 
   mechanicalBadge: {
     fontWeight: 400,
-    color: "#999",
+    color: "#888",
     marginLeft: 10,
     fontSize: 12,
     fontStyle: "italic" as const,
@@ -257,7 +300,7 @@ const S = {
 
   // ── Health bar ──────────────────────────────────────────────────────────────
   healthBarWrap: {
-    margin: "10px 0 6px",
+    margin: "12px 0 8px",
   } as React.CSSProperties,
 
   healthBarTrack: {
@@ -268,12 +311,23 @@ const S = {
     overflow: "hidden" as const,
   } as React.CSSProperties,
 
+  // Darker, clearly readable caption
   healthBarCaption: {
     fontFamily: MONO,
     fontSize: 10,
-    color: "#888",
+    color: "#444",
     marginTop: 4,
     letterSpacing: "0.04em",
+  } as React.CSSProperties,
+
+  // Legend line below health bar
+  healthBarLegend: {
+    fontFamily: MONO,
+    fontSize: 10,
+    color: "#555",
+    marginTop: 3,
+    letterSpacing: "0.02em",
+    fontStyle: "italic" as const,
   } as React.CSSProperties,
 
   // ── Collapsible ok group ────────────────────────────────────────────────────
@@ -289,21 +343,23 @@ const S = {
     textAlign: "left" as const,
     fontFamily: MONO,
     fontSize: 12,
-    color: "#888",
+    color: "#666",
     paddingTop: 8,
     paddingBottom: 8,
   } as React.CSSProperties,
 
+  // Reason lines — darker for readable contrast
   reasonLine: {
     fontSize: 12,
-    color: "#555",
-    marginTop: 4,
-    paddingLeft: 8,
-    lineHeight: 1.4,
+    color: "#333",
+    marginTop: 5,
+    paddingLeft: 4,
+    lineHeight: 1.45,
+    fontFamily: MONO,
   } as React.CSSProperties,
 
   reasonArrow: {
-    color: "#888",
+    color: "#666",
     marginRight: 4,
   } as React.CSSProperties,
 
@@ -316,8 +372,8 @@ const S = {
     color: "#3b82d4",
     cursor: "pointer",
     userSelect: "none" as const,
-    marginTop: 6,
-    paddingLeft: 8,
+    marginTop: 8,
+    paddingLeft: 4,
     background: "none",
     border: "none",
     padding: 0,
@@ -333,12 +389,12 @@ const S = {
 
   expandedArea: {
     marginTop: 8,
-    paddingLeft: 8,
+    paddingLeft: 4,
   } as React.CSSProperties,
 
   diffSummaryLine: {
     fontSize: 11,
-    color: "#666",
+    color: "#444",
     fontFamily: MONO,
     marginBottom: 6,
     background: "#f7f7f7",
@@ -348,12 +404,13 @@ const S = {
 
   diffFileLabel: {
     fontSize: 11,
-    color: "#777",
+    color: "#555",
     fontFamily: MONO,
     marginBottom: 2,
     marginTop: 4,
   } as React.CSSProperties,
 
+  // Bounded diff block — max height ~250px with internal scroll
   codeBlock: {
     fontFamily: MONO,
     fontSize: 11,
@@ -362,25 +419,34 @@ const S = {
     background: "#fafafa",
     padding: "8px",
     overflowX: "auto" as const,
+    overflowY: "auto" as const,
+    maxHeight: 250,
     whiteSpace: "pre" as const,
     marginBottom: 6,
+    display: "block",
   } as React.CSSProperties,
 
   diffLineRemoved: {
     color: "#cc0000",
     background: "#fff0f0",
     display: "block",
+    whiteSpace: "pre" as const,
+    minWidth: "100%",
   } as React.CSSProperties,
 
   diffLineAdded: {
-    color: "#008800",
+    color: "#006600",
     background: "#f0fff0",
     display: "block",
+    whiteSpace: "pre" as const,
+    minWidth: "100%",
   } as React.CSSProperties,
 
   diffLineContext: {
-    color: "#255",
+    color: "#333",
     display: "block",
+    whiteSpace: "pre" as const,
+    minWidth: "100%",
   } as React.CSSProperties,
 
   githubLink: {
@@ -397,28 +463,17 @@ const S = {
     display: "flex",
     justifyContent: "space-between",
     alignItems: "center",
-    padding: "14px 0 12px",
+    padding: "16px 0 12px",
     fontSize: 13,
     fontWeight: 700,
     color: "#111",
     letterSpacing: "0.04em",
     borderTop: "1px dashed #bbb",
-    marginTop: 4,
+    marginTop: 8,
   } as React.CSSProperties,
 
   totalAdjusted: {
     color: "#cc0000",
-  } as React.CSSProperties,
-
-  receiptStamp: {
-    display: "flex",
-    justifyContent: "space-between",
-    fontSize: 9,
-    color: "#aaa",
-    letterSpacing: "0.06em",
-    padding: "10px 0 14px",
-    borderTop: "1px dashed #e0e0e0",
-    marginTop: 4,
   } as React.CSSProperties,
 
   // Jagged bottom edge via SVG
@@ -432,7 +487,7 @@ const S = {
     justifyContent: "space-between",
     width: "100%",
     maxWidth: 560,
-    padding: "12px 0 32px",
+    padding: "16px 0 40px",
   } as React.CSSProperties,
 
   bottomBtn: {
@@ -442,9 +497,60 @@ const S = {
     background: "none",
     border: "none",
     cursor: "pointer",
-    letterSpacing: "0.04em",
+    letterSpacing: "0.06em",
     padding: 0,
     textDecoration: "underline",
+  } as React.CSSProperties,
+
+  // ── Screen transition wrapper ──────────────────────────────────────────────
+  fadeIn: {
+    animation: "fp-fadein 0.25s ease both",
+  } as React.CSSProperties,
+
+  // ── Loading screen ─────────────────────────────────────────────────────────
+  loadingCard: {
+    background: "#fff",
+    border: "1px solid #d0d0d0",
+    width: "100%",
+    maxWidth: 600,
+    padding: "40px 48px",
+    display: "flex",
+    flexDirection: "column" as const,
+    gap: 20,
+  } as React.CSSProperties,
+
+  loadingLabel: {
+    fontFamily: MONO,
+    fontSize: 11,
+    color: "#888",
+    letterSpacing: "0.08em",
+    textTransform: "uppercase" as const,
+  } as React.CSSProperties,
+
+  loadingText: {
+    fontFamily: MONO,
+    fontSize: 14,
+    color: "#111",
+    letterSpacing: "0.06em",
+    animation: "fp-pulse 1.4s ease-in-out infinite",
+  } as React.CSSProperties,
+
+  loadingTrack: {
+    height: 3,
+    background: "#e8e8e8",
+    width: "100%",
+    overflow: "hidden" as const,
+    position: "relative" as const,
+  } as React.CSSProperties,
+
+  loadingBar: {
+    position: "absolute" as const,
+    top: 0,
+    left: 0,
+    height: "100%",
+    width: "40%",
+    background: "#111",
+    animation: "fp-slide 1.6s ease-in-out infinite",
   } as React.CSSProperties,
 };
 
@@ -478,7 +584,7 @@ function JaggedEdge() {
 }
 
 // ---------------------------------------------------------------------------
-// DiffPatch — renders a unified diff patch with coloured lines
+// DiffPatch — renders a unified diff patch with coloured lines, bounded height
 // ---------------------------------------------------------------------------
 
 function DiffPatch({ patch }: { patch: string }) {
@@ -554,7 +660,7 @@ function ExpandableDiff({
               {diff.sampleSnippet ? (
                 <>
                   <div style={S.diffFileLabel}>
-                    // {diff.files[0] ?? "undisclosed"} (undisclosed)
+                    // {diff.files[0] ?? "evidence"}
                   </div>
                   <DiffPatch patch={diff.sampleSnippet} />
                 </>
@@ -562,7 +668,7 @@ function ExpandableDiff({
                 <div style={S.diffSummaryLine}>
                   {diff.files.length} file
                   {diff.files.length !== 1 ? "s" : ""} changed, +
-                  {diff.additions} −{diff.deletions} in undisclosed area
+                  {diff.additions} −{diff.deletions}
                 </div>
               )}
             </>
@@ -571,13 +677,13 @@ function ExpandableDiff({
             <>
               <div style={S.diffSummaryLine}>
                 {diff.files.length} file{diff.files.length !== 1 ? "s" : ""}{" "}
-                changed, +{diff.additions} −{diff.deletions} in undisclosed area
+                changed, +{diff.additions} −{diff.deletions}
               </div>
 
               {rep && rep.patch && (
                 <>
                   <div style={S.diffFileLabel}>
-                    // {rep.filename} (undisclosed)
+                    // {rep.filename}
                   </div>
                   <DiffPatch patch={rep.patch} />
                 </>
@@ -640,6 +746,9 @@ function HealthBar({ routine, flagged }: HealthBarProps) {
       </div>
       <div style={S.healthBarCaption}>
         {routine} routine &bull; {flagged} flagged
+      </div>
+      <div style={S.healthBarLegend}>
+        routine = message matched the diff &middot; flagged = needs a look
       </div>
     </div>
   );
@@ -742,8 +851,12 @@ function CommitRow({
     return `↳ ${reason}`;
   }
 
+  const isAdjusted = verdict.status === "adjusted";
+  const rowStyle = isAdjusted ? S.commitRowAdjusted : S.commitRowRoutine;
+
   return (
-    <div style={S.commitRow}>
+    <div style={rowStyle}>
+      {/* Title row */}
       <div style={S.commitRowTop}>
         <span style={S.commitMsg}>{subject}</span>
         {verdict.status === "ok" && (
@@ -757,6 +870,7 @@ function CommitRow({
         )}
       </div>
 
+      {/* Status / reason section */}
       {verdict.status === "adjusted" && (
         <>
           {verdict.reasons.map((r, i) => (
@@ -764,6 +878,7 @@ function CommitRow({
               {formatReason(r)}
             </div>
           ))}
+          {/* Diff evidence — always present for adjusted items */}
           {verdict.undisclosedDiff && (
             <ExpandableDiff
               diff={verdict.undisclosedDiff}
@@ -793,6 +908,11 @@ function inferClaimedScope(subject: string): string {
 // InputScreen
 // ---------------------------------------------------------------------------
 
+// Default pre-fill: this project's own repo + guaranteed small real result
+const DEFAULT_REPO = "raahu1l/FinePrint";
+const DEFAULT_BASE_TAG = "v0.1.0";
+const DEFAULT_HEAD_TAG = "v0.2.0";
+
 interface InputScreenProps {
   onSubmit: (repoUrl: string, base: string, head: string) => void;
   loading: boolean;
@@ -800,9 +920,9 @@ interface InputScreenProps {
 }
 
 function InputScreen({ onSubmit, loading, error }: InputScreenProps) {
-  const [repoUrl, setRepoUrl] = useState("facebook/react");
-  const [base, setBase] = useState("");
-  const [head, setHead] = useState("");
+  const [repoUrl, setRepoUrl] = useState(DEFAULT_REPO);
+  const [base, setBase] = useState(DEFAULT_BASE_TAG);
+  const [head, setHead] = useState(DEFAULT_HEAD_TAG);
   const [tags, setTags] = useState<string[]>([]);
   const [tagsLoading, setTagsLoading] = useState(false);
   const [tagsError, setTagsError] = useState<string | null>(null);
@@ -871,8 +991,10 @@ function InputScreen({ onSubmit, loading, error }: InputScreenProps) {
     onSubmit(url, base, head);
   }
 
+  const btnDisabled = loading || tagsLoading || tags.length === 0;
+
   return (
-    <div style={S.page}>
+    <div style={{ ...S.page, ...S.fadeIn }}>
       <div style={S.card}>
         {/* Header */}
         <div style={S.inputHeader}>
@@ -919,7 +1041,7 @@ function InputScreen({ onSubmit, loading, error }: InputScreenProps) {
               >
                 {tagsLoading && <option value="">Loading tags…</option>}
                 {!tagsLoading && tags.length === 0 && (
-                  <option value="">—</option>
+                  <option value="">{base || "—"}</option>
                 )}
                 {tags.map((t) => (
                   <option key={t} value={t}>
@@ -942,7 +1064,7 @@ function InputScreen({ onSubmit, loading, error }: InputScreenProps) {
               >
                 {tagsLoading && <option value="">Loading tags…</option>}
                 {!tagsLoading && tags.length === 0 && (
-                  <option value="">—</option>
+                  <option value="">{head || "—"}</option>
                 )}
                 {tags.map((t) => (
                   <option key={t} value={t}>
@@ -954,9 +1076,13 @@ function InputScreen({ onSubmit, loading, error }: InputScreenProps) {
           </div>
 
           <button
-            style={S.checkBtn}
+            style={{
+              ...S.checkBtn,
+              opacity: btnDisabled ? 0.45 : 1,
+              cursor: btnDisabled ? "not-allowed" : "pointer",
+            }}
             type="submit"
-            disabled={loading || tagsLoading || tags.length === 0}
+            disabled={btnDisabled}
           >
             {loading ? "CHECKING…" : "CHECK RELEASE →"}
           </button>
@@ -983,6 +1109,9 @@ interface ReceiptData {
   head: string;
   verdicts: CommitVerdict[];
   commitFiles: Map<string, CommitFile[]>;
+  /** Present when the range was capped at 250 commits */
+  cappedAt?: number;
+  totalCommits?: number;
 }
 
 interface ReceiptScreenProps {
@@ -991,12 +1120,14 @@ interface ReceiptScreenProps {
 }
 
 function ReceiptScreen({ data, onReset }: ReceiptScreenProps) {
-  const { owner, repo, base, head, verdicts, commitFiles } = data;
+  const { owner, repo, base, head, verdicts, commitFiles, cappedAt, totalCommits } = data;
   const { routine: routineCount, flagged: adjustedCount } =
     computeHealthCounts(verdicts);
   const shortSha = verdicts[0]?.sha.slice(0, 8).toUpperCase() ?? "00000000";
 
-  const receiptRuns = buildReceiptRuns(verdicts);
+  // Sort: adjusted-first, then routine; then collapse runs
+  const sortedVerdicts = sortVerdictsForDisplay(verdicts);
+  const receiptRuns = buildReceiptRuns(sortedVerdicts);
 
   function handleCopyRaw() {
     const draft = buildReleaseNotesDraft(verdicts, base, head);
@@ -1007,13 +1138,20 @@ function ReceiptScreen({ data, onReset }: ReceiptScreenProps) {
   }
 
   return (
-    <div style={S.receiptOuter}>
+    <div style={{ ...S.receiptOuter, ...S.fadeIn }}>
       {/* Receipt card */}
       <div style={S.receiptCard}>
-        {/* Meta */}
+        {/* Muted receipt ID — barely visible */}
         <div style={S.receiptMeta}>
-          FINEPRINT RECEIPT · #{shortSha}
+          #{shortSha}
         </div>
+
+        {/* Large-range banner */}
+        {cappedAt && totalCommits && (
+          <div style={S.largeBanner}>
+            Large release: showing the most recent {cappedAt} of {totalCommits} commits.
+          </div>
+        )}
 
         {/* Version header */}
         <div style={S.receiptVersion}>
@@ -1023,12 +1161,12 @@ function ReceiptScreen({ data, onReset }: ReceiptScreenProps) {
           {verdicts.length} items · release receipt
         </div>
 
-        {/* Health bar */}
+        {/* Health bar + legend */}
         <HealthBar routine={routineCount} flagged={adjustedCount} />
 
         <div style={S.dashedDivider} />
 
-        {/* Commit rows (with ok-run collapsing) */}
+        {/* Commit rows (adjusted-first, with ok-run collapsing at bottom) */}
         {receiptRuns.map((run, idx) =>
           run.kind === "group" ? (
             <CollapsibleOkGroup
@@ -1061,12 +1199,6 @@ function ReceiptScreen({ data, onReset }: ReceiptScreenProps) {
               {adjustedCount} of {verdicts.length} adjusted
             </span>
           </span>
-        </div>
-
-        {/* Stamp */}
-        <div style={S.receiptStamp}>
-          <span>STAMP: SHA256 // VERIFIED</span>
-          <span>REC-OK</span>
         </div>
       </div>
 
@@ -1110,9 +1242,12 @@ export default function App() {
         // Fetch commit range from GitHub
         const token = (import.meta as { env?: { VITE_GITHUB_TOKEN?: string } })
           .env?.VITE_GITHUB_TOKEN;
-        const commits = await fetchCommitRange(repoUrl, base, head, {
-          token,
-        });
+        const { commits, totalCommits, cappedAt } = await fetchCommitRange(
+          repoUrl,
+          base,
+          head,
+          { token }
+        );
 
         // Run checks
         const verdicts = runChecks(commits, base, head);
@@ -1123,13 +1258,11 @@ export default function App() {
           commitFiles.set(c.sha, c.files);
         }
 
-        setReceiptData({ owner, repo, base, head, verdicts, commitFiles });
+        setReceiptData({ owner, repo, base, head, verdicts, commitFiles, cappedAt, totalCommits });
         setScreen("receipt");
       } catch (err) {
-        // Give a friendly, non-technical message when the range is too large.
-        const friendly = err instanceof OversizedRangeError
-          ? "This range spans too many commits — FinePrint checks one release at a time. Try comparing two adjacent tags instead."
-          : err instanceof Error ? err.message : String(err);
+        const friendly =
+          err instanceof Error ? err.message : String(err);
         setError(friendly);
         setScreen("input");
       }
@@ -1145,16 +1278,17 @@ export default function App() {
 
   if (screen === "loading") {
     return (
-      <div
-        style={{
-          ...S.page,
-          fontFamily: MONO,
-          fontSize: 14,
-          color: "#555",
-          letterSpacing: "0.06em",
-        }}
-      >
-        FETCHING COMMITS… PLEASE WAIT
+      <div style={{ ...S.page, ...S.fadeIn }}>
+        <div style={S.loadingCard}>
+          <span style={S.loadingLabel}>FINEPRINT · RELEASE AUDIT</span>
+          <span style={S.loadingText}>FETCHING COMMITS…</span>
+          <div style={S.loadingTrack}>
+            <div style={S.loadingBar} />
+          </div>
+          <span style={{ ...S.loadingLabel, color: "#bbb" }}>
+            ANALYZING COMMIT RANGE — PLEASE WAIT
+          </span>
+        </div>
       </div>
     );
   }

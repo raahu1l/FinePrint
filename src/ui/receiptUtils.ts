@@ -21,12 +21,26 @@ export type ReceiptRun =
   | { kind: "group"; verdicts: CommitVerdict[] };
 
 /**
+ * Sort verdicts for display: adjusted items first (preserving their original
+ * chronological order among themselves), followed by all routine
+ * (ok/mechanical) items (also in their original chronological order).
+ */
+export function sortVerdictsForDisplay(verdicts: CommitVerdict[]): CommitVerdict[] {
+  const adjusted = verdicts.filter((v) => v.status === "adjusted");
+  const routine = verdicts.filter((v) => v.status !== "adjusted");
+  return [...adjusted, ...routine];
+}
+
+/**
  * Partition `verdicts` into display runs.
  *
  * Rules:
  *  - adjusted items always appear as individual singles.
  *  - consecutive runs of ok/mechanical items with length < 3 stay as singles.
  *  - consecutive runs of ok/mechanical items with length >= 3 become a group.
+ *
+ * Note: call sortVerdictsForDisplay first so adjusted items appear before the
+ * collapsed routine group.
  */
 export function buildReceiptRuns(verdicts: CommitVerdict[]): ReceiptRun[] {
   const runs: ReceiptRun[] = [];

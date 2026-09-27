@@ -14,6 +14,22 @@ export interface CommitRecord {
   files: CommitFile[];
 }
 
+/**
+ * The result returned by fetchCommitRange.
+ * When the range exceeds 250 commits, only the most-recent 250 are analysed
+ * and `cappedAt` is set to the actual total so the UI can show a banner.
+ */
+export interface CommitRangeResult {
+  commits: CommitRecord[];
+  /** Total commits in the range as reported by GitHub. */
+  totalCommits: number;
+  /**
+   * Present (and equal to 250) when the range was capped.
+   * Undefined when totalCommits <= 250 (no cap applied).
+   */
+  cappedAt?: number;
+}
+
 /** Options accepted by fetchCommitRange. */
 export interface FetchOptions {
   /**
