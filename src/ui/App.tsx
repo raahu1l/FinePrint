@@ -768,7 +768,7 @@ interface CollapsibleOkGroupProps {
   head: string;
 }
 
-function CollapsibleOkGroup({
+export function CollapsibleOkGroup({
   verdicts,
   allFilesMap,
   owner,
@@ -778,9 +778,19 @@ function CollapsibleOkGroup({
 }: CollapsibleOkGroupProps) {
   const [open, setOpen] = useState(false);
 
+  const collapseButton = (
+    <button
+      style={{ ...S.collapseRow, color: "#3b82d4" }}
+      onClick={() => setOpen(false)}
+    >
+      ▾ collapse {verdicts.length} routine commits
+    </button>
+  );
+
   if (open) {
     return (
       <>
+        {collapseButton}
         {verdicts.map((v) => (
           <CommitRow
             key={v.sha}
@@ -792,12 +802,7 @@ function CollapsibleOkGroup({
             head={head}
           />
         ))}
-        <button
-          style={{ ...S.collapseRow, color: "#3b82d4" }}
-          onClick={() => setOpen(false)}
-        >
-          ▾ collapse {verdicts.length} routine commits
-        </button>
+        {collapseButton}
       </>
     );
   }
