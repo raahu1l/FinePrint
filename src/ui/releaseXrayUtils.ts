@@ -120,6 +120,8 @@ function stateForCommits(
   category: XrayCategory
 ): XrayFileState {
   if (commits.length === 0) return "grey";
+  if (commits.every(({ verdict }) => verdict.status === "mechanical")) return "grey";
+  if (hasUnavailableEvidence) return "unknown";
   const states = commits.map(({ verdict, file }) => {
     if (verdict.status === "mechanical") return "grey";
     if (verdict.findings?.some((finding) =>
@@ -139,11 +141,10 @@ function stateForCommits(
   const unique = [...new Set(states)];
   if (unique.length > 1) return "mixed";
   if (unique[0] === "grey") return "grey";
-  if (category === "Unknown") return "unknown";
-  if (hasUnavailableEvidence) return "unknown";
   if (findings.length > 0) {
     return findings.some((finding) => finding.check === "area-mismatch") ? "red" : "amber";
   }
+  if (category === "Unknown") return "unknown";
   return unique[0] ?? "grey";
 }
 
@@ -208,6 +209,9 @@ export function buildReleaseXray(
       entry.hasUnavailableEvidence ||= file.patch === null;
       if (file.status && !entry.statuses.includes(file.status)) {
         entry.statuses.push(file.status);
+      }
+      if (file.filename !== logicalFilename && !entry.previousFilenames.includes(file.filename)) {
+        entry.previousFilenames.push(file.filename);
       }
       if (file.previousFilename && !entry.previousFilenames.includes(file.previousFilename)) {
         entry.previousFilenames.push(file.previousFilename);

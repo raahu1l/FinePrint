@@ -93,10 +93,18 @@ test("finding summary keeps commit-level findings visible and navigable", () => 
   const model = buildReleaseXray([commit], [verdict]);
   const onFinding = jest.fn();
 
-  render(<FindingSummary model={model} onFinding={onFinding} />);
+  render(
+    <FindingSummary
+      model={model}
+      onFinding={onFinding}
+      selectedFindingKey={findingKey("commit-b", finding)}
+    />
+  );
 
   expect(screen.getByText("Commit-level finding; exact affected file unavailable")).toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", { name: /view evidence/i }));
+  const evidenceButton = screen.getByRole("button", { name: /view evidence/i });
+  expect(evidenceButton).toHaveAttribute("aria-pressed", "true");
+  fireEvent.click(evidenceButton);
   expect(onFinding).toHaveBeenCalledWith(
     "commit-b",
     expect.objectContaining(finding)

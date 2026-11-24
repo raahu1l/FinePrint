@@ -66,6 +66,16 @@ function subject(message: string): string {
   return extractSubject(message);
 }
 
+function findingAction(check: CheckFinding["check"]): string {
+  if (check === "area-mismatch") {
+    return "Inspect the commit diff for code areas omitted from the commit message.";
+  }
+  if (check === "semver") {
+    return "Inspect the affected file for removed exports, changed signatures, or config schema removals.";
+  }
+  return "Compare removed and added dependency versions in the manifest patch.";
+}
+
 function DiffView({ patch }: { patch: string | null }) {
   if (!patch) {
     return <p className="empty-evidence">GitHub did not provide a patch for this file (it may be binary or unavailable).</p>;
@@ -266,9 +276,11 @@ export function FileDetails({
 export function FindingSummary({
   model,
   onFinding,
+  selectedFindingKey,
 }: {
   model: ReleaseXrayModel;
   onFinding: (commitSha: string, finding: CheckFinding) => void;
+  selectedFindingKey?: string;
 }) {
   if (model.findingItems.length === 0) {
     return (
@@ -284,15 +296,18 @@ export function FindingSummary({
       <div className="finding-cards">
         {model.findingItems.map((finding) => {
           const affected = finding.affectedFilenames?.join(", ");
+          const key = findingKey(finding.commitSha, finding);
+          const selected = selectedFindingKey === key;
           return (
-            <article className={`finding-card ${finding.check}`} key={`${finding.commitSha}-${finding.check}-${finding.explanation}`}>
+            <article className={`finding-card ${finding.check}${selected ? " selected" : ""}`} key={key} aria-label={`${findingTitles[finding.check]}: ${finding.explanation}${selected ? ", selected" : ""}`}>
               <div>
                 <span className="finding-kicker">{findingTitles[finding.check]}</span>
                 <h3>{finding.explanation}</h3>
                 <p>{affected ? affected : "Commit-level finding; exact affected file unavailable"}</p>
                 <code>{finding.commitSha.slice(0, 7)} · {subject(finding.commitMessage)}</code>
+                <p className="finding-action"><strong>Next:</strong> {findingAction(finding.check)}</p>
               </div>
-              <button type="button" onClick={() => onFinding(finding.commitSha, finding)}>View evidence <span aria-hidden="true">→</span></button>
+              <button type="button" onClick={() => onFinding(finding.commitSha, finding)} aria-pressed={selected}>View evidence <span aria-hidden="true">→</span></button>
             </article>
           );
         })}
@@ -314,8 +329,7 @@ export function CommitEvidenceDetails({
   owner: string;
   repo: string;
 }) {
-  const firstPatch = commit.files.find((file) => file.patch !== null)?.patch ?? null;
-  const firstFilename = commit.files.find((file) => file.patch !== null)?.filename;
+  const patchedFiles = commit.files.filter((file) => file.patch !== null);
   return (
     <aside className="details commit-only-details" id="inspection-details">
       <div className="details-heading"><span className="eyebrow">COMMIT-LEVEL EVIDENCE</span><h2>{subject(commit.message)}</h2><code>{commit.sha.slice(0, 7)}</code></div>
@@ -328,7 +342,14 @@ export function CommitEvidenceDetails({
         </>
       )}
       <div className="evidence-heading"><span className="eyebrow">CODE EVIDENCE</span><a href={`https://github.com/${owner}/${repo}/commit/${commit.sha}`} target="_blank" rel="noreferrer">Open on GitHub ↗</a></div>
-      {firstPatch ? <><span className="evidence-file">{firstFilename}</span><DiffView patch={firstPatch} /></> : <p className="empty-evidence">Evidence unavailable: GitHub did not provide an inspectable patch for this commit. No fake diff is shown.</p>}
+      {patchedFiles.length > 0
+        ? patchedFiles.map((file) => (
+            <div className="commit-evidence-file" key={file.filename}>
+              <span className="evidence-file">{file.filename}</span>
+              <DiffView patch={file.patch} />
+            </div>
+          ))
+        : <p className="empty-evidence">Evidence unavailable: GitHub did not provide an inspectable patch for this commit. No fake diff is shown.</p>}
     </aside>
   );
 }
@@ -454,7 +475,7 @@ function Report({ data, onReset }: { data: ReportData; onReset: () => void }) {
         onFile={handleFile}
       />
 
-      <FindingSummary model={model} onFinding={handleFinding} />
+      <FindingSummary model={model} onFinding={handleFinding} selectedFindingKey={selectedFindingKey} />
 
       <section className="explorer" id="inspection-details">
         <div className="explorer-list">

@@ -144,4 +144,69 @@ describe("release X-ray model", () => {
     expect(model.files[0].state).toBe("mixed");
     expect(model.files[0].findings).toHaveLength(1);
   });
+
+  test("missing patch evidence takes priority over mixed commit states", () => {
+    const sameFile = "src/api/users.ts";
+    const finding = {
+      check: "dependency" as const,
+      explanation: "dependency major bump",
+      affectedFilenames: [sameFile],
+    };
+    const missing = commit("missing", sameFile);
+    missing.files[0].patch = null;
+    const model = buildReleaseXray(
+      [missing, commit("ok", sameFile)],
+      [verdict("missing", [finding]), verdict("ok")]
+    );
+    expect(model.files[0].state).toBe("unknown");
+    expect(model.files[0].hasUnavailableEvidence).toBe(true);
+  });
+
+  test("an explicit area finding remains red even for an unknown category", () => {
+    const binary = commit("binary", "assets/logo.bin");
+    binary.files[0].patch = "@@ -1 +1 @@";
+    const finding = {
+      check: "area-mismatch" as const,
+      explanation: "unknown path omitted by commit message",
+      affectedFilenames: ["assets/logo.bin"],
+    };
+    const model = buildReleaseXray(
+      [binary],
+      [verdict("binary", [finding])]
+    );
+    expect(model.files[0].category).toBe("Unknown");
+    expect(model.files[0].state).toBe("red");
+  });
+
+  test("preserves every old path across chained renames", () => {
+    const commits: CommitRecord[] = [
+      commit("old-a", "src/auth/a.ts"),
+      {
+        sha: "rename-b",
+        message: "rename to b",
+        files: [{ filename: "src/auth/b.ts", previousFilename: "src/auth/a.ts", status: "renamed", additions: 0, deletions: 0, patch: "@@ rename @@" }],
+      },
+      {
+        sha: "rename-c",
+        message: "rename to c",
+        files: [{ filename: "src/auth/c.ts", previousFilename: "src/auth/b.ts", status: "renamed", additions: 0, deletions: 0, patch: "@@ rename @@" }],
+      },
+    ];
+    const model = buildReleaseXray(commits, [
+      verdict("old-a"),
+      verdict("rename-b"),
+      verdict("rename-c"),
+    ]);
+    expect(model.uniqueFiles).toBe(1);
+    expect(model.files[0].filename).toBe("src/auth/c.ts");
+    expect(model.files[0].previousFilenames).toEqual([
+      "src/auth/a.ts",
+      "src/auth/b.ts",
+    ]);
+    expect(model.files[0].commits.map((item) => item.commit.sha)).toEqual([
+      "old-a",
+      "rename-b",
+      "rename-c",
+    ]);
+  });
 });
