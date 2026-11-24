@@ -23,7 +23,7 @@ import type { CommitRecord } from "../github/types.js";
 import { checkAreaMismatch } from "./areaMismatch.js";
 import { checkSemver, parseBumpType, type BumpType } from "./semver.js";
 import { checkDepBump } from "./depBump.js";
-import type { CommitVerdict } from "./types.js";
+import type { CheckFinding, CommitVerdict } from "./types.js";
 
 export type { CommitVerdict, CommitStatus } from "./types.js";
 export type { BumpType };
@@ -69,10 +69,6 @@ export function isMechanicalCommit(message: string): boolean {
  * `CommitVerdict`.  All reason arrays are concatenated; the `undisclosedDiff`
  * from the area-mismatch check is forwarded when present.
  *
- * When a commit is flagged solely by semver or dep checks (no area-mismatch
- * undisclosedDiff), we synthesise a diff evidence block from the triggering
- * files so the UI always has something to show in "show diff".
- *
  * This function is intentionally pure and has no I/O so it can be unit-tested
  * without mocking.
  */
@@ -89,38 +85,33 @@ export function mergeVerdicts(
   ];
 
   const flagged = areaResult.flagged || semverResult.flagged || depResult.flagged;
+  const findings: CheckFinding[] = [];
+
+  if (areaResult.undisclosedDiff) {
+    findings.push({
+      check: "area-mismatch",
+      explanation: areaResult.reasons.join("; "),
+      affectedFilenames: areaResult.undisclosedDiff.files,
+    });
+  }
+  for (const finding of semverResult.findings ?? []) {
+    findings.push({ check: "semver", ...finding });
+  }
+  for (const finding of depResult.findings ?? []) {
+    findings.push({ check: "dependency", ...finding });
+  }
 
   const verdict: CommitVerdict = {
     sha: commit.sha,
     message: commit.message,
     status: flagged ? "adjusted" : "ok",
     reasons,
+    findings,
   };
 
   if (areaResult.undisclosedDiff) {
     // Area-mismatch already provides evidence — use it as-is.
     verdict.undisclosedDiff = areaResult.undisclosedDiff;
-  } else if (flagged && (semverResult.flagged || depResult.flagged)) {
-    // Semver or dep check fired but there is no area-mismatch evidence.
-    // Synthesise a diff block from the files that have patches so the UI
-    // always has a "show diff" section for every adjusted item.
-    const evidenceFiles = commit.files.filter((f) => f.patch !== null);
-    if (evidenceFiles.length > 0) {
-      verdict.undisclosedDiff = {
-        files: evidenceFiles.map((f) => f.filename),
-        additions: evidenceFiles.reduce((s, f) => s + f.additions, 0),
-        deletions: evidenceFiles.reduce((s, f) => s + f.deletions, 0),
-        sampleSnippet: evidenceFiles[0].patch,
-      };
-    } else if (commit.files.length > 0) {
-      // Files exist but none have patch text (e.g. binary files) — still show filenames.
-      verdict.undisclosedDiff = {
-        files: commit.files.map((f) => f.filename),
-        additions: commit.files.reduce((s, f) => s + f.additions, 0),
-        deletions: commit.files.reduce((s, f) => s + f.deletions, 0),
-        sampleSnippet: null,
-      };
-    }
   }
 
   return verdict;

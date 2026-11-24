@@ -91,33 +91,16 @@ describe("mergeVerdicts — one check fires", () => {
     expect(verdict.undisclosedDiff).toBeUndefined();
   });
 
-  test("semver check alone with files → adjusted, undisclosedDiff synthesised from commit files", () => {
-    const commitWithFiles: CommitRecord = {
-      sha: "sha002",
-      message: "fix: something",
-      files: [
-        { filename: "src/index.ts", additions: 3, deletions: 1, patch: "-export function foo() {}\n+export function foo(x: number) {}" },
-      ],
-    };
-    const verdict = mergeVerdicts(commitWithFiles, OK_AREA, FLAGGED_SEMVER, OK_DEP);
+  test("semver findings do not masquerade as undisclosed area evidence", () => {
+    const verdict = mergeVerdicts(BASE_COMMIT, OK_AREA, FLAGGED_SEMVER, OK_DEP);
     expect(verdict.status).toBe("adjusted");
-    expect(verdict.undisclosedDiff).toBeDefined();
-    expect(verdict.undisclosedDiff!.files).toContain("src/index.ts");
-    expect(verdict.undisclosedDiff!.sampleSnippet).toContain("export function foo");
+    expect(verdict.undisclosedDiff).toBeUndefined();
   });
 
-  test("dep check alone with files → adjusted, undisclosedDiff synthesised", () => {
-    const commitWithFiles: CommitRecord = {
-      sha: "sha003",
-      message: "fix: bump dep",
-      files: [
-        { filename: "package.json", additions: 1, deletions: 1, patch: '-  "express": "1.0.0"\n+  "express": "2.0.0"' },
-      ],
-    };
-    const verdict = mergeVerdicts(commitWithFiles, OK_AREA, OK_SEMVER, FLAGGED_DEP);
+  test("dependency findings do not masquerade as undisclosed area evidence", () => {
+    const verdict = mergeVerdicts(BASE_COMMIT, OK_AREA, OK_SEMVER, FLAGGED_DEP);
     expect(verdict.status).toBe("adjusted");
-    expect(verdict.undisclosedDiff).toBeDefined();
-    expect(verdict.undisclosedDiff!.files).toContain("package.json");
+    expect(verdict.undisclosedDiff).toBeUndefined();
   });
 });
 
@@ -180,7 +163,7 @@ describe("mergeVerdicts — multiple checks fire (the key integration test)", ()
     );
   });
 
-  test("semver + dep fire, area does not, with files → undisclosedDiff synthesised", () => {
+  test("semver + dep fire, area does not, with files → no synthetic area evidence", () => {
     const commitWithFiles: CommitRecord = {
       sha: "sha004",
       message: "refactor: change signature",
@@ -191,10 +174,7 @@ describe("mergeVerdicts — multiple checks fire (the key integration test)", ()
     };
     const verdict = mergeVerdicts(commitWithFiles, OK_AREA, FLAGGED_SEMVER, FLAGGED_DEP);
     expect(verdict.status).toBe("adjusted");
-    expect(verdict.undisclosedDiff).toBeDefined();
-    // Synthesised diff should cover the evidence files
-    expect(verdict.undisclosedDiff!.files.length).toBeGreaterThan(0);
-    expect(verdict.undisclosedDiff!.sampleSnippet).not.toBeNull();
+    expect(verdict.undisclosedDiff).toBeUndefined();
   });
 });
 

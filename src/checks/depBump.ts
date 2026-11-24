@@ -10,6 +10,10 @@ import type { CommitRecord } from "../github/types.js";
 export interface DepBumpResult {
   flagged: boolean;
   reasons: string[];
+  findings?: Array<{
+    explanation: string;
+    affectedFilenames: string[];
+  }>;
 }
 
 /** Manifest basenames that will be inspected (compared case-insensitively). */
@@ -193,6 +197,7 @@ function parseManifest(basename: string, patch: string): string[] {
  */
 export function checkDepBump(commit: CommitRecord): DepBumpResult {
   const reasons: string[] = [];
+  const findings: NonNullable<DepBumpResult["findings"]> = [];
 
   for (const file of commit.files) {
     if (file.patch === null) continue;
@@ -202,11 +207,18 @@ export function checkDepBump(commit: CommitRecord): DepBumpResult {
     if (!MANIFEST_FILES.has(basename)) continue;
 
     const fileReasons = parseManifest(basename, file.patch);
-    reasons.push(...fileReasons);
+    for (const explanation of fileReasons) {
+      reasons.push(explanation);
+      findings.push({
+        explanation,
+        affectedFilenames: [file.filename],
+      });
+    }
   }
 
   return {
     flagged: reasons.length > 0,
     reasons,
+    findings,
   };
 }

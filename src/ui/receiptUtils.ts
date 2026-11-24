@@ -1,7 +1,7 @@
 /**
  * src/ui/receiptUtils.ts
  *
- * Pure utility functions for receipt rendering.
+ * Compatibility utilities for legacy commit-list rendering.
  * Kept separate from App.tsx so they can be unit-tested without React.
  */
 

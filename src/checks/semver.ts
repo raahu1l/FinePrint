@@ -26,6 +26,10 @@ export interface SemverResult {
   flagged: boolean;
   /** Human-readable descriptions of each violation found. */
   reasons: string[];
+  findings?: Array<{
+    explanation: string;
+    affectedFilenames: string[];
+  }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -186,36 +190,47 @@ export function checkSemver(
     return { flagged: false, reasons: [] };
   }
 
-  let removedExport = false;
-  let signatureChanged = false;
-  let configSchemaChanged = false;
+  const removedExportFiles: string[] = [];
+  const signatureChangedFiles: string[] = [];
+  const configSchemaFiles: string[] = [];
 
   for (const file of commit.files) {
     if (!file.patch) continue;
 
-    if (!removedExport && hasRemovedExport(file.patch)) {
-      removedExport = true;
+    if (hasRemovedExport(file.patch)) {
+      removedExportFiles.push(file.filename);
     }
-    if (!signatureChanged && hasChangedSignature(file.patch)) {
-      signatureChanged = true;
+    if (hasChangedSignature(file.patch)) {
+      signatureChangedFiles.push(file.filename);
     }
-    if (!configSchemaChanged && hasConfigSchemaChange(file, file.patch)) {
-      configSchemaChanged = true;
+    if (hasConfigSchemaChange(file, file.patch)) {
+      configSchemaFiles.push(file.filename);
     }
-
-    // Short-circuit once all three types are confirmed.
-    if (removedExport && signatureChanged && configSchemaChanged) break;
   }
 
   const reasons: string[] = [];
   const prefix = `semver violation: breaking change detected in a ${bumpType} bump`;
 
-  if (removedExport) reasons.push(`${prefix} (removed export)`);
-  if (signatureChanged) reasons.push(`${prefix} (function signature changed)`);
-  if (configSchemaChanged) reasons.push(`${prefix} (config schema change)`);
+  const findings: NonNullable<SemverResult["findings"]> = [];
+  if (removedExportFiles.length > 0) {
+    const explanation = `${prefix} (removed export)`;
+    reasons.push(explanation);
+    findings.push({ explanation, affectedFilenames: removedExportFiles });
+  }
+  if (signatureChangedFiles.length > 0) {
+    const explanation = `${prefix} (function signature changed)`;
+    reasons.push(explanation);
+    findings.push({ explanation, affectedFilenames: signatureChangedFiles });
+  }
+  if (configSchemaFiles.length > 0) {
+    const explanation = `${prefix} (config schema change)`;
+    reasons.push(explanation);
+    findings.push({ explanation, affectedFilenames: configSchemaFiles });
+  }
 
   return {
     flagged: reasons.length > 0,
     reasons,
+    findings,
   };
 }

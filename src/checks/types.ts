@@ -17,6 +17,14 @@ export type { UndisclosedDiff };
  */
 export type CommitStatus = "ok" | "adjusted" | "mechanical";
 
+export type FindingCheck = "area-mismatch" | "semver" | "dependency";
+
+export interface CheckFinding {
+  check: FindingCheck;
+  explanation: string;
+  affectedFilenames?: string[];
+}
+
 /**
  * The final per-commit verdict emitted by runChecks / mergeVerdicts.
  *
@@ -28,5 +36,6 @@ export interface CommitVerdict {
   message: string;
   status: CommitStatus;
   reasons: string[];
+  findings?: CheckFinding[];
   undisclosedDiff?: UndisclosedDiff;
 }

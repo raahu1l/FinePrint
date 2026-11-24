@@ -1,7 +1,7 @@
 /**
  * src/ui/diffUtils.ts
  *
- * Pure utility functions that drive the FinePrint receipt UI:
+ * Pure utility functions shared by FinePrint's report UI:
  *   - isSmallDiff          — decides whether to show full code diff vs. summary
  *   - pickRepresentativeFile — selects the single file with the most changes
  *   - buildGitHubCompareUrl — constructs the GitHub compare URL

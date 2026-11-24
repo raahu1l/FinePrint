@@ -1,1349 +1,500 @@
-import React, { useState, useCallback, useEffect } from "react";
-import { fetchCommitRange, parseRepoUrl, fetchRepoTags } from "../github/fetchCommitRange.js";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import type React from "react";
+import type { CheckFinding, CommitVerdict } from "../checks/types.js";
 import { runChecks } from "../checks/checkLogic.js";
-import type { CommitVerdict } from "../checks/types.js";
-import type { UndisclosedDiff } from "../checks/areaMismatch.js";
-import type { CommitFile } from "../github/types.js";
 import {
-  isSmallDiff,
-  pickRepresentativeFile,
-  buildGitHubCompareUrl,
-  buildReleaseNotesDraft,
-  extractSubject,
-} from "./diffUtils.js";
+  fetchCommitRange,
+  fetchRepoTags,
+  parseRepoUrl,
+} from "../github/fetchCommitRange.js";
+import type { CommitFile, CommitRecord } from "../github/types.js";
+import { GitHubApiError, RateLimitError } from "../github/types.js";
 import {
-  buildReceiptRuns,
-  computeHealthCounts,
-  sortVerdictsForDisplay,
-} from "./receiptUtils.js";
+  buildReleaseXray,
+  LARGE_RELEASE_FILE_THRESHOLD,
+  type ReleaseXrayModel,
+  type ReleaseFinding,
+  type XrayCategory,
+  type XrayFile,
+  type XrayFileState,
+} from "./releaseXrayUtils.js";
+import { extractSubject } from "./diffUtils.js";
 
-// ---------------------------------------------------------------------------
-// Styles (inline CSS-in-JS object map)
-// ---------------------------------------------------------------------------
-
-const MONO = '"Courier New", Courier, monospace';
-const SANS = '-apple-system, "Segoe UI", system-ui, sans-serif';
-
-// Spacing scale: 4 | 8 | 12 | 16 | 20 | 24 | 32 | 40 | 48
-// All padding/margin values below are snapped to this scale.
-
-const S = {
-  // ── Page shell ─────────────────────────────────────────────────────────────
-  page: {
-    minHeight: "100vh",
-    background: "#f0f0f0",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    fontFamily: SANS,
-    padding: "32px 16px",
-  } as React.CSSProperties,
-
-  card: {
-    background: "#fff",
-    border: "1px solid #d0d0d0",
-    width: "100%",
-    maxWidth: 600,
-    padding: "40px 48px",
-  } as React.CSSProperties,
-
-  // ── Input screen ───────────────────────────────────────────────────────────
-  inputHeader: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "flex-start",
-    marginBottom: 8,
-  } as React.CSSProperties,
-
-  inputTitle: {
-    fontFamily: SANS,
-    fontSize: 30,
-    fontWeight: 800,
-    color: "#111",
-    margin: 0,
-    letterSpacing: "-0.02em",
-  } as React.CSSProperties,
-
-  auditBadge: {
-    fontFamily: MONO,
-    fontSize: 10,
-    color: "#555",
-    border: "1px solid #bbb",
-    padding: "4px 8px",
-    marginTop: 4,
-    letterSpacing: "0.06em",
-    background: "#f7f7f7",
-    whiteSpace: "nowrap" as const,
-  } as React.CSSProperties,
-
-  inputSubtitle: {
-    fontFamily: SANS,
-    fontSize: 14,
-    color: "#3b82d4",
-    marginTop: 4,
-    marginBottom: 32,
-    lineHeight: 1.5,
-  } as React.CSSProperties,
-
-  label: {
-    display: "block",
-    fontSize: 11,
-    fontWeight: 700,
-    color: "#444",
-    marginBottom: 6,
-    letterSpacing: "0.06em",
-    textTransform: "uppercase" as const,
-  } as React.CSSProperties,
-
-  textInput: {
-    width: "100%",
-    boxSizing: "border-box" as const,
-    border: "1px solid #ccc",
-    padding: "10px 12px",
-    fontSize: 13,
-    fontFamily: MONO,
-    color: "#222",
-    outline: "none",
-    transition: "border-color 0.15s",
-  } as React.CSSProperties,
-
-  hint: {
-    fontSize: 12,
-    color: "#888",
-    marginTop: 6,
-    marginBottom: 24,
-    lineHeight: 1.5,
-  } as React.CSSProperties,
-
-  tagRow: {
-    display: "flex",
-    gap: 16,
-    marginBottom: 24,
-  } as React.CSSProperties,
-
-  tagGroup: {
-    flex: 1,
-  } as React.CSSProperties,
-
-  select: {
-    width: "100%",
-    border: "1px solid #ccc",
-    padding: "10px 12px",
-    fontSize: 13,
-    fontFamily: SANS,
-    color: "#222",
-    background: "#fff",
-    cursor: "pointer",
-    appearance: "auto" as const,
-    outline: "none",
-    transition: "border-color 0.15s",
-  } as React.CSSProperties,
-
-  checkBtn: {
-    display: "block",
-    width: "100%",
-    padding: "14px 0",
-    background: "#111",
-    color: "#fff",
-    border: "none",
-    fontFamily: MONO,
-    fontSize: 12,
-    fontWeight: 700,
-    letterSpacing: "0.12em",
-    cursor: "pointer",
-    textTransform: "uppercase" as const,
-    transition: "background 0.15s, opacity 0.15s",
-  } as React.CSSProperties,
-
-  inputFooter: {
-    display: "flex",
-    justifyContent: "space-between",
-    marginTop: 32,
-    paddingTop: 16,
-    borderTop: "1px dashed #e0e0e0",
-    fontFamily: MONO,
-    fontSize: 10,
-    color: "#aaa",
-    letterSpacing: "0.06em",
-  } as React.CSSProperties,
-
-  errorBox: {
-    background: "#fff0f0",
-    border: "1px solid #f9a0a0",
-    color: "#c00",
-    padding: "10px 14px",
-    fontSize: 13,
-    marginBottom: 16,
-    lineHeight: 1.5,
-  } as React.CSSProperties,
-
-  // ── Large-range banner ─────────────────────────────────────────────────────
-  largeBanner: {
-    background: "#fffbea",
-    border: "1px solid #e6c84a",
-    color: "#5a4000",
-    padding: "8px 14px",
-    fontSize: 12,
-    fontFamily: MONO,
-    marginBottom: 12,
-    letterSpacing: "0.02em",
-    lineHeight: 1.5,
-  } as React.CSSProperties,
-
-  // ── Receipt screen ─────────────────────────────────────────────────────────
-  receiptOuter: {
-    background: "#f0f0f0",
-    minHeight: "100vh",
-    display: "flex",
-    flexDirection: "column" as const,
-    alignItems: "center",
-    padding: "40px 16px 0",
-    fontFamily: MONO,
-  } as React.CSSProperties,
-
-  receiptCard: {
-    background: "#fff",
-    width: "100%",
-    maxWidth: 560,
-    padding: "28px 36px 0",
-    border: "1px solid #d8d8d8",
-    position: "relative" as const,
-  } as React.CSSProperties,
-
-  // Tiny, muted receipt ID — barely visible
-  receiptMeta: {
-    textAlign: "center" as const,
-    fontSize: 9,
-    color: "#ccc",
-    letterSpacing: "0.08em",
-    marginBottom: 12,
-  } as React.CSSProperties,
-
-  receiptVersion: {
-    textAlign: "center" as const,
-    fontSize: 28,
-    fontWeight: 700,
-    color: "#111",
-    letterSpacing: "0.02em",
-    marginBottom: 4,
-  } as React.CSSProperties,
-
-  receiptSub: {
-    textAlign: "center" as const,
-    fontSize: 11,
-    color: "#777",
-    letterSpacing: "0.06em",
-    marginBottom: 20,
-  } as React.CSSProperties,
-
-  dashedDivider: {
-    borderTop: "1px dashed #bbb",
-    margin: "12px 0",
-  } as React.CSSProperties,
-
-  // ── Commit row ─────────────────────────────────────────────────────────────
-  // Adjusted rows get a red left border; routine rows get a neutral one
-  commitRowAdjusted: {
-    padding: "10px 10px 10px 12px",
-    borderBottom: "1px dashed #ddd",
-    borderLeft: "3px solid #cc0000",
-    marginLeft: 0,
-    marginBottom: 4,
-    background: "#fff",
-  } as React.CSSProperties,
-
-  commitRowRoutine: {
-    padding: "10px 10px 10px 12px",
-    borderBottom: "1px dashed #ddd",
-    borderLeft: "3px solid #e0e0e0",
-    marginLeft: 0,
-    background: "#fff",
-  } as React.CSSProperties,
-
-  commitRowTop: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "flex-start",
-  } as React.CSSProperties,
-
-  commitMsg: {
-    fontSize: 13,
-    color: "#222",
-    flex: 1,
-    lineHeight: 1.45,
-    wordBreak: "break-word" as const,
-    fontWeight: 500,
-  } as React.CSSProperties,
-
-  commitStat: {
-    fontFamily: MONO,
-    fontSize: 12,
-    color: "#555",
-    whiteSpace: "nowrap" as const,
-    marginLeft: 12,
-    paddingTop: 1,
-  } as React.CSSProperties,
-
-  adjustedBadge: {
-    fontWeight: 700,
-    color: "#cc0000",
-    marginLeft: 10,
-    fontSize: 13,
-  } as React.CSSProperties,
-
-  mechanicalBadge: {
-    fontWeight: 400,
-    color: "#888",
-    marginLeft: 10,
-    fontSize: 12,
-    fontStyle: "italic" as const,
-  } as React.CSSProperties,
-
-  // ── Health bar ──────────────────────────────────────────────────────────────
-  healthBarWrap: {
-    margin: "12px 0 8px",
-  } as React.CSSProperties,
-
-  healthBarTrack: {
-    display: "flex",
-    height: 6,
-    width: "100%",
-    background: "#e0e0e0",
-    overflow: "hidden" as const,
-  } as React.CSSProperties,
-
-  // Darker, clearly readable caption
-  healthBarCaption: {
-    fontFamily: MONO,
-    fontSize: 10,
-    color: "#444",
-    marginTop: 4,
-    letterSpacing: "0.04em",
-  } as React.CSSProperties,
-
-  // Legend line below health bar
-  healthBarLegend: {
-    fontFamily: MONO,
-    fontSize: 10,
-    color: "#555",
-    marginTop: 3,
-    letterSpacing: "0.02em",
-    fontStyle: "italic" as const,
-  } as React.CSSProperties,
-
-  // ── Collapsible ok group ────────────────────────────────────────────────────
-  collapseRow: {
-    display: "flex",
-    alignItems: "center",
-    gap: 6,
-    cursor: "pointer",
-    background: "none",
-    border: "none",
-    borderBottom: "1px dashed #ddd",
-    width: "100%",
-    textAlign: "left" as const,
-    fontFamily: MONO,
-    fontSize: 12,
-    color: "#666",
-    paddingTop: 8,
-    paddingBottom: 8,
-  } as React.CSSProperties,
-
-  // Reason lines — darker for readable contrast
-  reasonLine: {
-    fontSize: 12,
-    color: "#333",
-    marginTop: 5,
-    paddingLeft: 4,
-    lineHeight: 1.45,
-    fontFamily: MONO,
-  } as React.CSSProperties,
-
-  reasonArrow: {
-    color: "#666",
-    marginRight: 4,
-  } as React.CSSProperties,
-
-  // ── Expandable diff ────────────────────────────────────────────────────────
-  expandToggle: {
-    display: "flex",
-    alignItems: "center",
-    gap: 4,
-    fontSize: 11,
-    color: "#3b82d4",
-    cursor: "pointer",
-    userSelect: "none" as const,
-    marginTop: 8,
-    paddingLeft: 4,
-    background: "none",
-    border: "none",
-    padding: 0,
-    fontFamily: MONO,
-  } as React.CSSProperties,
-
-  chevron: (open: boolean): React.CSSProperties => ({
-    display: "inline-block",
-    transition: "transform 0.15s ease",
-    transform: open ? "rotate(90deg)" : "rotate(0deg)",
-    fontSize: 11,
-  }),
-
-  expandedArea: {
-    marginTop: 8,
-    paddingLeft: 4,
-  } as React.CSSProperties,
-
-  diffSummaryLine: {
-    fontSize: 11,
-    color: "#444",
-    fontFamily: MONO,
-    marginBottom: 6,
-    background: "#f7f7f7",
-    padding: "3px 8px",
-    border: "1px solid #e0e0e0",
-  } as React.CSSProperties,
-
-  diffFileLabel: {
-    fontSize: 11,
-    color: "#555",
-    fontFamily: MONO,
-    marginBottom: 2,
-    marginTop: 4,
-  } as React.CSSProperties,
-
-  // Bounded diff block — max height ~250px with internal scroll
-  codeBlock: {
-    fontFamily: MONO,
-    fontSize: 11,
-    lineHeight: 1.5,
-    border: "1px solid #ddd",
-    background: "#fafafa",
-    padding: "8px",
-    overflowX: "auto" as const,
-    overflowY: "auto" as const,
-    maxHeight: 250,
-    whiteSpace: "pre" as const,
-    marginBottom: 6,
-    display: "block",
-  } as React.CSSProperties,
-
-  diffLineRemoved: {
-    color: "#cc0000",
-    background: "#fff0f0",
-    display: "block",
-    whiteSpace: "pre" as const,
-    minWidth: "100%",
-  } as React.CSSProperties,
-
-  diffLineAdded: {
-    color: "#006600",
-    background: "#f0fff0",
-    display: "block",
-    whiteSpace: "pre" as const,
-    minWidth: "100%",
-  } as React.CSSProperties,
-
-  diffLineContext: {
-    color: "#333",
-    display: "block",
-    whiteSpace: "pre" as const,
-    minWidth: "100%",
-  } as React.CSSProperties,
-
-  githubLink: {
-    fontSize: 11,
-    color: "#3b82d4",
-    fontFamily: MONO,
-    display: "inline-block",
-    marginTop: 4,
-    textDecoration: "underline",
-  } as React.CSSProperties,
-
-  // ── Total + footer ─────────────────────────────────────────────────────────
-  totalRow: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    padding: "16px 0 12px",
-    fontSize: 13,
-    fontWeight: 700,
-    color: "#111",
-    letterSpacing: "0.04em",
-    borderTop: "1px dashed #bbb",
-    marginTop: 8,
-  } as React.CSSProperties,
-
-  totalAdjusted: {
-    color: "#cc0000",
-  } as React.CSSProperties,
-
-  // Jagged bottom edge via SVG
-  jaggedEdge: {
-    display: "block",
-    width: "100%",
-  } as React.CSSProperties,
-
-  receiptBottom: {
-    display: "flex",
-    justifyContent: "space-between",
-    width: "100%",
-    maxWidth: 560,
-    padding: "16px 0 40px",
-  } as React.CSSProperties,
-
-  bottomBtn: {
-    fontFamily: MONO,
-    fontSize: 11,
-    color: "#3b82d4",
-    background: "none",
-    border: "none",
-    cursor: "pointer",
-    letterSpacing: "0.06em",
-    padding: 0,
-    textDecoration: "underline",
-  } as React.CSSProperties,
-
-  // ── Screen transition wrapper ──────────────────────────────────────────────
-  fadeIn: {
-    animation: "fp-fadein 0.25s ease both",
-  } as React.CSSProperties,
-
-  // ── Loading screen ─────────────────────────────────────────────────────────
-  loadingCard: {
-    background: "#fff",
-    border: "1px solid #d0d0d0",
-    width: "100%",
-    maxWidth: 600,
-    padding: "40px 48px",
-    display: "flex",
-    flexDirection: "column" as const,
-    gap: 20,
-  } as React.CSSProperties,
-
-  loadingLabel: {
-    fontFamily: MONO,
-    fontSize: 11,
-    color: "#888",
-    letterSpacing: "0.08em",
-    textTransform: "uppercase" as const,
-  } as React.CSSProperties,
-
-  loadingText: {
-    fontFamily: MONO,
-    fontSize: 14,
-    color: "#111",
-    letterSpacing: "0.06em",
-    animation: "fp-pulse 1.4s ease-in-out infinite",
-  } as React.CSSProperties,
-
-  loadingTrack: {
-    height: 3,
-    background: "#e8e8e8",
-    width: "100%",
-    overflow: "hidden" as const,
-    position: "relative" as const,
-  } as React.CSSProperties,
-
-  loadingBar: {
-    position: "absolute" as const,
-    top: 0,
-    left: 0,
-    height: "100%",
-    width: "40%",
-    background: "#111",
-    animation: "fp-slide 1.6s ease-in-out infinite",
-  } as React.CSSProperties,
-};
-
-// ---------------------------------------------------------------------------
-// JaggedEdge — SVG receipt tear
-// ---------------------------------------------------------------------------
-
-function JaggedEdge() {
-  // Build a zigzag path across the full width at 560px
-  const points: string[] = [];
-  const step = 10;
-  const count = 57; // 560 / 10 = 56 teeth
-  points.push("M0,0");
-  for (let i = 0; i <= count; i++) {
-    const x = i * step;
-    const y = i % 2 === 0 ? 10 : 0;
-    points.push(`L${x},${y}`);
-  }
-  points.push("L560,10 L560,0 Z");
-
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 560 10"
-      preserveAspectRatio="none"
-      style={{ display: "block", width: "100%", height: 10, fill: "#f0f0f0" }}
-    >
-      <path d={points.join(" ")} />
-    </svg>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// DiffPatch — renders a unified diff patch with coloured lines, bounded height
-// ---------------------------------------------------------------------------
-
-function DiffPatch({ patch }: { patch: string }) {
-  const lines = patch.split("\n");
-  return (
-    <div style={S.codeBlock}>
-      {lines.map((line, i) => {
-        if (line.startsWith("-")) {
-          return (
-            <span key={i} style={S.diffLineRemoved}>
-              {line}
-            </span>
-          );
-        }
-        if (line.startsWith("+")) {
-          return (
-            <span key={i} style={S.diffLineAdded}>
-              {line}
-            </span>
-          );
-        }
-        return (
-          <span key={i} style={S.diffLineContext}>
-            {line}
-          </span>
-        );
-      })}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// ExpandableDiff
-// ---------------------------------------------------------------------------
-
-interface ExpandableDiffProps {
-  diff: UndisclosedDiff;
-  allFiles: CommitFile[];
-  owner: string;
-  repo: string;
-  base: string;
-  head: string;
-}
-
-function ExpandableDiff({
-  diff,
-  allFiles,
-  owner,
-  repo,
-  base,
-  head,
-}: ExpandableDiffProps) {
-  const [open, setOpen] = useState(false);
-  const small = isSmallDiff(diff);
-  const rep = pickRepresentativeFile(allFiles, diff);
-
-  return (
-    <div>
-      <button
-        style={S.expandToggle}
-        onClick={() => setOpen((o) => !o)}
-        aria-expanded={open}
-      >
-        <span style={S.chevron(open)}>▸</span>
-        {open ? "hide diff" : "show diff"}
-      </button>
-
-      {open && (
-        <div style={S.expandedArea}>
-          {small ? (
-            // Small: show inline patch of the sample snippet
-            <>
-              {diff.sampleSnippet ? (
-                <>
-                  <div style={S.diffFileLabel}>
-                    // {diff.files[0] ?? "evidence"}
-                  </div>
-                  <DiffPatch patch={diff.sampleSnippet} />
-                </>
-              ) : (
-                <div style={S.diffSummaryLine}>
-                  {diff.files.length} file
-                  {diff.files.length !== 1 ? "s" : ""} changed, +
-                  {diff.additions} −{diff.deletions}
-                </div>
-              )}
-            </>
-          ) : (
-            // Large: summary line + representative file snippet + GitHub link
-            <>
-              <div style={S.diffSummaryLine}>
-                {diff.files.length} file{diff.files.length !== 1 ? "s" : ""}{" "}
-                changed, +{diff.additions} −{diff.deletions}
-              </div>
-
-              {rep && rep.patch && (
-                <>
-                  <div style={S.diffFileLabel}>
-                    // {rep.filename}
-                  </div>
-                  <DiffPatch patch={rep.patch} />
-                </>
-              )}
-
-              <a
-                href={buildGitHubCompareUrl(
-                  owner,
-                  repo,
-                  base,
-                  head,
-                  rep?.filename
-                )}
-                target="_blank"
-                rel="noreferrer"
-                style={S.githubLink}
-              >
-                View full diff on GitHub →
-              </a>
-            </>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// HealthBar
-// ---------------------------------------------------------------------------
-
-interface HealthBarProps {
-  routine: number;
-  flagged: number;
-}
-
-function HealthBar({ routine, flagged }: HealthBarProps) {
-  const total = routine + flagged;
-  const routinePct = total === 0 ? 100 : Math.round((routine / total) * 100);
-  const flaggedPct = 100 - routinePct;
-
-  return (
-    <div style={S.healthBarWrap}>
-      <div style={S.healthBarTrack}>
-        <div
-          style={{
-            width: `${routinePct}%`,
-            background: flagged === 0 ? "#4caf50" : "#bdbdbd",
-            transition: "width 0.2s",
-          }}
-        />
-        {flaggedPct > 0 && (
-          <div
-            style={{
-              width: `${flaggedPct}%`,
-              background: "#cc0000",
-            }}
-          />
-        )}
-      </div>
-      <div style={S.healthBarCaption}>
-        {routine} routine &bull; {flagged} flagged
-      </div>
-      <div style={S.healthBarLegend}>
-        routine = message matched the diff &middot; flagged = needs a look
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// CollapsibleOkGroup
-// ---------------------------------------------------------------------------
-
-interface CollapsibleOkGroupProps {
-  verdicts: CommitVerdict[];
-  allFilesMap: Map<string, CommitFile[]>;
-  owner: string;
-  repo: string;
-  base: string;
-  head: string;
-}
-
-export function CollapsibleOkGroup({
-  verdicts,
-  allFilesMap,
-  owner,
-  repo,
-  base,
-  head,
-}: CollapsibleOkGroupProps) {
-  const [open, setOpen] = useState(false);
-
-  const collapseButton = (
-    <button
-      style={{ ...S.collapseRow, color: "#3b82d4" }}
-      onClick={() => setOpen(false)}
-    >
-      ▾ collapse {verdicts.length} routine commits
-    </button>
-  );
-
-  if (open) {
-    return (
-      <>
-        {collapseButton}
-        {verdicts.map((v) => (
-          <CommitRow
-            key={v.sha}
-            verdict={v}
-            allFiles={allFilesMap.get(v.sha) ?? []}
-            owner={owner}
-            repo={repo}
-            base={base}
-            head={head}
-          />
-        ))}
-        {collapseButton}
-      </>
-    );
-  }
-
-  return (
-    <button style={S.collapseRow} onClick={() => setOpen(true)}>
-      <span>▸</span>
-      <span>
-        {verdicts.length} routine commits — all clear ▸
-      </span>
-    </button>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// CommitRow
-// ---------------------------------------------------------------------------
-
-interface CommitRowProps {
-  verdict: CommitVerdict;
-  allFiles: CommitFile[];
-  owner: string;
-  repo: string;
-  base: string;
-  head: string;
-}
-
-function CommitRow({
-  verdict,
-  allFiles,
-  owner,
-  repo,
-  base,
-  head,
-}: CommitRowProps) {
-  const subject = extractSubject(verdict.message);
-  const totalAdd = allFiles.reduce((s, f) => s + f.additions, 0);
-  const totalDel = allFiles.reduce((s, f) => s + f.deletions, 0);
-  const statStr = `+${totalAdd} -${totalDel}`;
-
-  // Format reasons in the "↳ claims only X, but Y also changed — not mentioned" style
-  function formatReason(reason: string): string {
-    // Area mismatch reasons look like: "area changed but not mentioned in commit message: auth"
-    const areaMatch = reason.match(
-      /^area changed but not mentioned in commit message:\s*(.+)$/i
-    );
-    if (areaMatch) {
-      const area = areaMatch[1];
-      // Try to infer what was "claimed" from the commit message
-      return `↳ claims only ${inferClaimedScope(subject)}, but ${area} also changed — not mentioned.`;
-    }
-    return `↳ ${reason}`;
-  }
-
-  const isAdjusted = verdict.status === "adjusted";
-  const rowStyle = isAdjusted ? S.commitRowAdjusted : S.commitRowRoutine;
-
-  return (
-    <div style={rowStyle}>
-      {/* Title row */}
-      <div style={S.commitRowTop}>
-        <span style={S.commitMsg}>{subject}</span>
-        {verdict.status === "ok" && (
-          <span style={S.commitStat}>{statStr}</span>
-        )}
-        {verdict.status === "adjusted" && (
-          <span style={S.adjustedBadge}>adjusted</span>
-        )}
-        {verdict.status === "mechanical" && (
-          <span style={S.mechanicalBadge}>mechanical</span>
-        )}
-      </div>
-
-      {/* Status / reason section */}
-      {verdict.status === "adjusted" && (
-        <>
-          {verdict.reasons.map((r, i) => (
-            <div key={i} style={S.reasonLine}>
-              {formatReason(r)}
-            </div>
-          ))}
-          {/* Diff evidence — always present for adjusted items */}
-          {verdict.undisclosedDiff && (
-            <ExpandableDiff
-              diff={verdict.undisclosedDiff}
-              allFiles={allFiles}
-              owner={owner}
-              repo={repo}
-              base={base}
-              head={head}
-            />
-          )}
-        </>
-      )}
-    </div>
-  );
-}
-
-/** Heuristically extracts the scope label from a conventional commit message */
-function inferClaimedScope(subject: string): string {
-  const match = subject.match(/^[\w]+\(([^)]+)\)/);
-  if (match) return match[1];
-  const typeMatch = subject.match(/^(\w+):/);
-  if (typeMatch) return typeMatch[1];
-  return "the stated scope";
-}
-
-// ---------------------------------------------------------------------------
-// InputScreen
-// ---------------------------------------------------------------------------
-
-// Default pre-fill: this project's own repo + guaranteed small real result
 const DEFAULT_REPO = "raahu1l/FinePrint";
 const DEFAULT_BASE_TAG = "v0.1.0";
 const DEFAULT_HEAD_TAG = "v0.2.0";
+const DEFAULT_BASE = DEFAULT_BASE_TAG;
+const DEFAULT_HEAD = DEFAULT_HEAD_TAG;
+const API_BASE =
+  (import.meta as { env?: { PROD?: boolean } }).env?.PROD ||
+  (typeof window !== "undefined" && window.location.port === "8888")
+    ? "/.netlify/functions/github"
+    : "https://api.github.com";
 
-interface InputScreenProps {
-  onSubmit: (repoUrl: string, base: string, head: string) => void;
-  onValuesChange: (repoUrl: string, base: string, head: string) => void;
-  initialRepoUrl: string;
-  initialBase: string;
-  initialHead: string;
-  loading: boolean;
-  error: string | null;
+const stateLabels: Record<XrayFileState, string> = {
+  red: "Undisclosed area",
+  amber: "Flagged check",
+  green: "No finding",
+  grey: "Excluded / unknown",
+  mixed: "Mixed commit results",
+  unknown: "Evidence unavailable",
+};
+const stateColors: Record<XrayFileState, string> = {
+  red: "#ff5d70",
+  amber: "#ffc857",
+  green: "#46d5bd",
+  grey: "#8290aa",
+  mixed: "#b18cff",
+  unknown: "#9ca7ba",
+};
+
+const findingTitles: Record<CheckFinding["check"], string> = {
+  "area-mismatch": "Undisclosed change",
+  semver: "Semver violation",
+  dependency: "Dependency bump",
+};
+
+function friendlyError(error: unknown): string {
+  if (error instanceof RateLimitError) return error.message;
+  if (error instanceof GitHubApiError && error.status === 404) {
+    return "Repository or tag not found. Check the URL and selected tags.";
+  }
+  return error instanceof Error ? error.message : String(error);
 }
 
-function InputScreen({ onSubmit, onValuesChange, initialRepoUrl, initialBase, initialHead, loading, error }: InputScreenProps) {
-  const [repoUrl, setRepoUrl] = useState(initialRepoUrl);
+function subject(message: string): string {
+  return extractSubject(message);
+}
+
+function DiffView({ patch }: { patch: string | null }) {
+  if (!patch) {
+    return <p className="empty-evidence">GitHub did not provide a patch for this file (it may be binary or unavailable).</p>;
+  }
+  return (
+    <pre className="diff-view">
+      {patch.split("\n").map((line, index) => (
+        <span className={line.startsWith("+") ? "diff-add" : line.startsWith("-") ? "diff-remove" : "diff-context"} key={`${index}-${line}`}>
+          {line}
+          {"\n"}
+        </span>
+      ))}
+    </pre>
+  );
+}
+
+function XraySilhouette({ category }: { category: XrayCategory }) {
+  if (category === "UI / Components") {
+    return <svg className="object-silhouette" viewBox="0 0 84 64" aria-hidden="true"><rect x="11" y="8" width="62" height="42" rx="4" /><path d="M31 58h22M42 50v8" /><rect x="18" y="15" width="48" height="28" rx="2" /></svg>;
+  }
+  if (category === "Backend / API") {
+    return <svg className="object-silhouette" viewBox="0 0 84 64" aria-hidden="true"><rect x="17" y="8" width="50" height="48" rx="5" /><path d="M27 20h30M27 32h30M27 44h30M24 14v36M60 14v36" /><circle cx="33" cy="26" r="2" /><circle cx="33" cy="38" r="2" /></svg>;
+  }
+  if (category === "Dependencies") {
+    return <svg className="object-silhouette" viewBox="0 0 84 64" aria-hidden="true"><path d="M12 24l30-14 30 14-30 14z" /><path d="M12 24v24l30 14 30-14V24M42 38v24" /><path d="M24 19l30 14" /></svg>;
+  }
+  if (category === "Tests") {
+    return <svg className="object-silhouette" viewBox="0 0 84 64" aria-hidden="true"><path d="M27 9h30M32 9v18L19 48a7 7 0 007 7h32a7 7 0 007-7L52 27V9" /><path d="M27 43h30M30 36h24" /></svg>;
+  }
+  if (category === "Configuration") {
+    return <svg className="object-silhouette" viewBox="0 0 84 64" aria-hidden="true"><rect x="10" y="10" width="64" height="44" rx="5" /><circle cx="25" cy="27" r="5" /><circle cx="42" cy="27" r="5" /><circle cx="59" cy="27" r="5" /><path d="M22 43h40" /></svg>;
+  }
+  if (category === "Documentation") {
+    return <svg className="object-silhouette" viewBox="0 0 84 64" aria-hidden="true"><path d="M18 8h38l10 10v38H18zM56 8v12h10" /><path d="M27 29h30M27 38h30M27 47h22" /></svg>;
+  }
+  if (category === "CI / Infrastructure") {
+    return <svg className="object-silhouette" viewBox="0 0 84 64" aria-hidden="true"><circle cx="16" cy="32" r="7" /><circle cx="42" cy="32" r="7" /><circle cx="68" cy="32" r="7" /><path d="M23 32h12M49 32h12" /></svg>;
+  }
+  return <svg className="object-silhouette" viewBox="0 0 84 64" aria-hidden="true"><path d="M18 8h38l10 10v38H18zM56 8v12h10" /><path d="M27 32h30M27 41h22M27 50h26" /></svg>;
+}
+
+function XrayObject({ file, selected, onSelect }: { file: XrayFile; selected: boolean; onSelect: () => void }) {
+  const color = stateColors[file.state];
+  return (
+    <button
+      type="button"
+      className={`xray-object ${selected ? "selected" : ""}`}
+      style={{ "--object-color": color } as React.CSSProperties}
+      onClick={onSelect}
+      aria-label={`Inspect ${file.filename}, ${file.category}, ${stateLabels[file.state]}${file.statuses.length > 0 ? `, status ${file.statuses.join(", ")}` : ""}`}
+    >
+      <XraySilhouette category={file.category} />
+      <span className="object-name">{file.filename.split("/").pop()}</span>
+      {file.statuses.length > 0 && <span className="object-status">{file.statuses.join(" / ")}</span>}
+    </button>
+  );
+}
+
+function Scanner({ model, selectedCategory, selectedFile, onCategory, onFile }: {
+  model: ReleaseXrayModel;
+  selectedCategory: XrayCategory | null;
+  selectedFile: XrayFile | null;
+  onCategory: (category: XrayCategory | null) => void;
+  onFile: (file: XrayFile) => void;
+}) {
+  const visible = selectedCategory
+    ? model.files.filter((file) => file.category === selectedCategory)
+    : model.files;
+  const isLargeRelease = model.uniqueFiles >= LARGE_RELEASE_FILE_THRESHOLD;
+  const selectedGroup = selectedCategory
+    ? model.categories.find((group) => group.category === selectedCategory)
+    : null;
+  const categoryCounts = selectedGroup
+    ? {
+        red: selectedGroup.files.filter((file) => file.state === "red").length,
+        amber: selectedGroup.files.filter((file) => file.state === "amber").length,
+        unknown: selectedGroup.files.filter((file) => file.state === "unknown").length,
+        other: selectedGroup.files.filter((file) => !["red", "amber", "unknown"].includes(file.state)).length,
+      }
+    : null;
+  return (
+    <section className="scanner-panel">
+      <div className="scanner-toolbar">
+        <div><span className="eyebrow">LIVE INSPECTION</span><h2>Release X-ray</h2></div>
+        <div className="legend">{(["red", "amber", "green", "grey", "mixed", "unknown"] as XrayFileState[]).map((state) => <span key={state}><i style={{ background: stateColors[state] }} />{stateLabels[state]}</span>)}</div>
+      </div>
+      {selectedGroup && categoryCounts && (
+        <div className="category-summary" role="status">
+          <button type="button" onClick={() => onCategory(null)} aria-label="Return to all file categories">← All files</button>
+          <strong>{selectedGroup.category}</strong>
+          <span>{selectedGroup.files.length} files</span>
+          {categoryCounts.red > 0 && <span className="category-count red">{categoryCounts.red} undisclosed</span>}
+          {categoryCounts.amber > 0 && <span className="category-count amber">{categoryCounts.amber} review</span>}
+          {categoryCounts.unknown > 0 && <span className="category-count unknown">{categoryCounts.unknown} unavailable</span>}
+        </div>
+      )}
+      <div className="scanner">
+        <div className="scan-line" />
+        <div className="object-grid">
+          {isLargeRelease && !selectedCategory
+            ? model.categories.map((group) => (
+                <button
+                  type="button"
+                  className="xray-object category-cluster"
+                  key={group.category}
+                  onClick={() => onCategory(group.category)}
+                  aria-label={`Open ${group.category} category with ${group.files.length} files`}
+                >
+                  <XraySilhouette category={group.category} />
+                  <span className="object-name">{group.category}</span>
+                  <span className="object-status">{group.files.length} files</span>
+                </button>
+              ))
+            : visible.map((file) => <XrayObject key={file.filename} file={file} selected={selectedFile?.filename === file.filename} onSelect={() => onFile(file)} />)}
+          {visible.length === 0 && <p className="scanner-empty">No changed files in this category.</p>}
+        </div>
+      </div>
+      <div className="category-strip">
+        <button type="button" className={!selectedCategory ? "category active" : "category"} onClick={() => onCategory(null)}>All files <b>{model.uniqueFiles}</b></button>
+        {model.categories.map((group) => <button type="button" className={selectedCategory === group.category ? "category active" : "category"} key={group.category} onClick={() => onCategory(group.category)}>{group.category} <b>{group.files.length}</b></button>)}
+      </div>
+    </section>
+  );
+}
+
+function FileExplorer({ model, selectedCategory, selectedFile, onFile }: { model: ReleaseXrayModel; selectedCategory: XrayCategory | null; selectedFile: XrayFile | null; onFile: (file: XrayFile) => void }) {
+  const files = selectedCategory ? model.files.filter((file) => file.category === selectedCategory) : model.files;
+  return <div className="file-list">{files.map((file) => <button className={`file-row ${selectedFile?.filename === file.filename ? "selected" : ""}`} key={file.filename} onClick={() => onFile(file)}><span className="state-dot" style={{ background: stateColors[file.state] }} /><span className="file-path">{file.filename}</span><span className="file-stats">+{file.additions} −{file.deletions}</span></button>)}</div>;
+}
+
+export function findingKey(commitSha: string, finding: CheckFinding): string {
+  return `${commitSha}-${finding.check}-${finding.explanation}`;
+}
+
+export function resolveFindingSelection(
+  model: ReleaseXrayModel,
+  commitSha: string,
+  finding: CheckFinding
+): { file: XrayFile | null; commitSha: string } {
+  if (finding.affectedFilenames?.length) {
+    const affected = finding.affectedFilenames;
+    const file = model.files.find((candidate) =>
+      candidate.commits.some((item) => item.commit.sha === commitSha) &&
+      affected.some((filename) => filename === candidate.filename || candidate.previousFilenames.includes(filename))
+    ) ?? model.files.find((candidate) =>
+      affected.some((filename) => filename === candidate.filename || candidate.previousFilenames.includes(filename))
+    ) ?? null;
+    return { file, commitSha };
+  }
+  return { file: null, commitSha };
+}
+
+export function FileDetails({
+  file,
+  owner,
+  repo,
+  initialCommitSha,
+  selectedFindingKey,
+  onFinding,
+}: {
+  file: XrayFile;
+  owner: string;
+  repo: string;
+  initialCommitSha?: string;
+  selectedFindingKey?: string;
+  onFinding?: (commitSha: string, finding: CheckFinding) => void;
+}) {
+  const [commitSha, setCommitSha] = useState(initialCommitSha ?? file.commits[0]?.commit.sha ?? "");
+  const selected = file.commits.find((item) => item.commit.sha === commitSha) ?? file.commits[0];
+  useEffect(() => setCommitSha(initialCommitSha ?? file.commits[0]?.commit.sha ?? ""), [file, initialCommitSha]);
+  if (!selected) return null;
+  const { commit, verdict } = selected;
+  return (
+    <aside className="details">
+      <div className="details-heading"><span className="eyebrow">FILE INSPECTION</span><h2>{file.filename}</h2><p><span className="status-pill" style={{ color: stateColors[file.state] }}>{stateLabels[file.state]}</span> · {file.category}</p></div>
+      <div className="stat-grid"><span><b>+{file.additions}</b> additions</span><span><b>−{file.deletions}</b> deletions</span><span><b>{file.commits.length}</b> associated commits</span>{file.statuses.length > 0 && <span><b>{file.statuses.join(" / ")}</b> file status</span>}</div>
+      {file.previousFilenames.length > 0 && <p className="muted">Renamed from {file.previousFilenames.join(", ")}</p>}
+      <label className="eyebrow" htmlFor="commit-select">COMMIT EVIDENCE</label>
+      <select id="commit-select" className="commit-select" value={commitSha} onChange={(event) => setCommitSha(event.target.value)}>{file.commits.map((item) => <option value={item.commit.sha} key={item.commit.sha}>{subject(item.commit.message)} · {item.commit.sha.slice(0, 7)}</option>)}</select>
+      <div className="commit-card"><div className="commit-card-top"><b>{subject(commit.message)}</b><code>{commit.sha.slice(0, 7)}</code></div><p className="muted">{verdict.status === "mechanical" ? "Mechanical commit excluded from verification." : verdict.status === "ok" ? "No current verification rule flagged this commit." : "This commit needs review."}</p>{verdict.findings?.map((finding) => {
+        const key = findingKey(commit.sha, finding);
+        return <button
+          type="button"
+          className={`finding ${selectedFindingKey === key ? "selected" : ""}`}
+          key={key}
+          onClick={() => onFinding?.(commit.sha, finding)}
+          aria-pressed={selectedFindingKey === key}
+        ><strong>{finding.check}</strong><span>{finding.explanation}</span></button>;
+      })}{verdict.findings?.length === 0 && <p className="muted">No finding. This is not proof that the change is safe.</p>}</div>
+      <div className="evidence-heading"><span className="eyebrow">CODE EVIDENCE</span><a href={`https://github.com/${owner}/${repo}/commit/${commit.sha}`} target="_blank" rel="noreferrer">Open on GitHub ↗</a></div>
+      {file.hasUnavailableEvidence && selected.file.patch === null
+        ? <div><p className="empty-evidence">Evidence unavailable: GitHub did not provide a patch for this file. It may be binary or its diff content may be unavailable.</p>{verdict.findings?.length ? <p className="muted">The verification finding below remains rule-based; it is not strengthened or replaced by fabricated diff evidence.</p> : null}</div>
+        : <DiffView patch={selected.file.patch} />}
+    </aside>
+  );
+}
+
+export function FindingSummary({
+  model,
+  onFinding,
+}: {
+  model: ReleaseXrayModel;
+  onFinding: (commitSha: string, finding: CheckFinding) => void;
+}) {
+  if (model.findingItems.length === 0) {
+    return (
+      <section className="findings-section">
+        <div className="section-heading"><span className="eyebrow">CHANGES REQUIRING ATTENTION</span><h2>No findings detected</h2></div>
+        <p className="findings-empty">The current rule-based checks found no release discrepancy. This does not prove every change is safe.</p>
+      </section>
+    );
+  }
+  return (
+    <section className="findings-section">
+      <div className="section-heading"><span className="eyebrow">CHANGES REQUIRING ATTENTION</span><h2>{model.findingItems.length} finding{model.findingItems.length === 1 ? "" : "s"} to review</h2></div>
+      <div className="finding-cards">
+        {model.findingItems.map((finding) => {
+          const affected = finding.affectedFilenames?.join(", ");
+          return (
+            <article className={`finding-card ${finding.check}`} key={`${finding.commitSha}-${finding.check}-${finding.explanation}`}>
+              <div>
+                <span className="finding-kicker">{findingTitles[finding.check]}</span>
+                <h3>{finding.explanation}</h3>
+                <p>{affected ? affected : "Commit-level finding; exact affected file unavailable"}</p>
+                <code>{finding.commitSha.slice(0, 7)} · {subject(finding.commitMessage)}</code>
+              </div>
+              <button type="button" onClick={() => onFinding(finding.commitSha, finding)}>View evidence <span aria-hidden="true">→</span></button>
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+export function CommitEvidenceDetails({
+  commit,
+  verdict,
+  finding,
+  owner,
+  repo,
+}: {
+  commit: CommitRecord;
+  verdict: CommitVerdict;
+  finding?: CheckFinding;
+  owner: string;
+  repo: string;
+}) {
+  const firstPatch = commit.files.find((file) => file.patch !== null)?.patch ?? null;
+  const firstFilename = commit.files.find((file) => file.patch !== null)?.filename;
+  return (
+    <aside className="details commit-only-details" id="inspection-details">
+      <div className="details-heading"><span className="eyebrow">COMMIT-LEVEL EVIDENCE</span><h2>{subject(commit.message)}</h2><code>{commit.sha.slice(0, 7)}</code></div>
+      {finding ? <div className="finding commit-finding"><strong>{findingTitles[finding.check]}</strong><span>{finding.explanation}</span></div> : null}
+      {verdict.status === "mechanical" ? <p className="muted">Mechanical commit excluded from verification.</p> : <p className="muted">{verdict.status === "ok" ? "No current verification rule flagged this commit." : "This commit needs review."}</p>}
+      {commit.files.length > 0 && (
+        <>
+          <span className="eyebrow">ASSOCIATED FILES</span>
+          <ul className="commit-file-list">{commit.files.map((file) => <li key={file.filename}>{file.filename}</li>)}</ul>
+        </>
+      )}
+      <div className="evidence-heading"><span className="eyebrow">CODE EVIDENCE</span><a href={`https://github.com/${owner}/${repo}/commit/${commit.sha}`} target="_blank" rel="noreferrer">Open on GitHub ↗</a></div>
+      {firstPatch ? <><span className="evidence-file">{firstFilename}</span><DiffView patch={firstPatch} /></> : <p className="empty-evidence">Evidence unavailable: GitHub did not provide an inspectable patch for this commit. No fake diff is shown.</p>}
+    </aside>
+  );
+}
+
+function VerificationChecks({ verdicts }: { verdicts: CommitVerdict[] }) {
+  const checks = [
+    { key: "area-mismatch", name: "Undisclosed Changes", description: "Area mismatch between the commit message and changed paths." },
+    { key: "semver", name: "Semver Check", description: "Breaking-change patterns in a non-major release." },
+    { key: "dependency", name: "Dependency Check", description: "Major dependency-version increases in manifests." },
+  ] as const;
+  return <section className="checks"><div><span className="eyebrow">VERIFICATION RULES</span><h2>What the engine found</h2></div><div className="check-grid">{checks.map((check) => { const count = verdicts.reduce((sum, verdict) => sum + (verdict.findings?.filter((finding) => finding.check === check.key).length ?? 0), 0); return <div className="check-card" key={check.key}><span className="check-count">{count}</span><h3>{check.name}</h3><p>{check.description}</p></div>; })}</div></section>;
+}
+
+export function CollapsibleOkGroup({ verdicts }: { verdicts: CommitVerdict[]; allFilesMap?: Map<string, CommitFile[]>; owner?: string; repo?: string; base?: string; head?: string }) {
+  const [open, setOpen] = useState(false);
+  if (!open) return <button className="routine-toggle" onClick={() => setOpen(true)}>▸ {verdicts.length} routine commits — all clear ▸</button>;
+  const collapse = <button className="routine-toggle" onClick={() => setOpen(false)}>▾ collapse {verdicts.length} routine commits</button>;
+  return <>{collapse}{verdicts.map((verdict) => <div className="routine-commit" key={verdict.sha}>{subject(verdict.message)}</div>)}{collapse}</>;
+}
+
+function InputScreen({ onSubmit, error, initialRepo, initialBase, initialHead }: { onSubmit: (repo: string, base: string, head: string) => void; error: string | null; initialRepo: string; initialBase: string; initialHead: string }) {
+  const [repo, setRepo] = useState(initialRepo);
   const [base, setBase] = useState(initialBase);
   const [head, setHead] = useState(initialHead);
   const [tags, setTags] = useState<string[]>([]);
-  const [tagsLoading, setTagsLoading] = useState(false);
-  const [tagsError, setTagsError] = useState<string | null>(null);
-
-  // Fetch tags whenever the repo URL changes (with a short debounce)
+  const [loadingTags, setLoadingTags] = useState(false);
   useEffect(() => {
-    const normalised = repoUrl.trim();
-    if (!normalised) return;
-
-    const url = normalised.includes("github.com")
-      ? normalised
-      : `https://github.com/${normalised}`;
-
-    // Validate the URL is parseable before firing a request
-    try {
-      parseRepoUrl(url);
-    } catch {
-      return;
-    }
-
+    if (!repo.trim()) return;
     let cancelled = false;
     const timer = setTimeout(async () => {
-      setTagsLoading(true);
-      setTagsError(null);
       try {
-        const token = (import.meta as { env?: { VITE_GITHUB_TOKEN?: string } })
-          .env?.VITE_GITHUB_TOKEN;
-        const fetched = await fetchRepoTags(url, { token });
-        if (cancelled) return;
-        if (fetched.length === 0) {
-          setTagsError("This repository has no tags.");
-          setTags([]);
-          setBase("");
-          setHead("");
-        } else {
-          setTags(fetched);
-          // Default to the two most-recent adjacent tags in API order (index 0 =
-          // newest, index 1 = second-newest).  Always reset both when a fresh tag
-          // list arrives so stale values from a previous repo are never kept.
-          setBase(fetched.length > 1 ? fetched[1] : fetched[0]);
-          setHead(fetched[0]);
-        }
-      } catch (err) {
-        if (cancelled) return;
-        setTagsError(err instanceof Error ? err.message : String(err));
-        setTags([]);
-        setBase("");
-        setHead("");
-      } finally {
-        if (!cancelled) setTagsLoading(false);
-      }
-    }, 600);
-
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [repoUrl]);
-
-  // Propagate current values to App so they survive unmount (navigation away)
-  useEffect(() => {
-    onValuesChange(repoUrl, base, head);
-  }, [repoUrl, base, head, onValuesChange]);
-
-  function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    // Normalise short "owner/repo" into a full URL
-    const url = repoUrl.includes("github.com")
-      ? repoUrl
-      : `https://github.com/${repoUrl}`;
-    onSubmit(url, base, head);
-  }
-
-  const btnDisabled = loading || tagsLoading || tags.length === 0;
-
-  return (
-    <div style={{ ...S.page, ...S.fadeIn }}>
-      <div style={S.card}>
-        {/* Header */}
-        <div style={S.inputHeader}>
-          <div>
-            <h1 style={S.inputTitle}>FinePrint</h1>
-            <p style={S.inputSubtitle}>Check what a release actually changed.</p>
-          </div>
-          <span style={S.auditBadge}>AUDIT TOOL V1.0</span>
-        </div>
-
-        {error && <div style={S.errorBox}>{error}</div>}
-
-        <form onSubmit={handleSubmit}>
-          {/* Repo URL */}
-          <label style={S.label} htmlFor="repoUrl">
-            GitHub repository URL
-          </label>
-          <input
-            id="repoUrl"
-            style={S.textInput}
-            type="text"
-            value={repoUrl}
-            onChange={(e) => setRepoUrl(e.target.value)}
-            placeholder="https://github.com/owner/repo or owner/repo"
-            required
-            autoComplete="off"
-            spellCheck={false}
-          />
-          <p style={S.hint}>Enter a canonical repository path or public HTTPS link</p>
-
-          {/* Tag row */}
-          {tagsError && <div style={S.errorBox}>{tagsError}</div>}
-          <div style={S.tagRow}>
-            <div style={S.tagGroup}>
-              <label style={S.label} htmlFor="baseTag">
-                From tag
-              </label>
-              <select
-                id="baseTag"
-                style={S.select}
-                value={base}
-                onChange={(e) => setBase(e.target.value)}
-                disabled={tagsLoading || tags.length === 0}
-              >
-                {tagsLoading && <option value="">Loading tags…</option>}
-                {!tagsLoading && tags.length === 0 && (
-                  <option value="">{base || "—"}</option>
-                )}
-                {tags.map((t) => (
-                  <option key={t} value={t}>
-                    {t}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div style={S.tagGroup}>
-              <label style={S.label} htmlFor="headTag">
-                To tag
-              </label>
-              <select
-                id="headTag"
-                style={S.select}
-                value={head}
-                onChange={(e) => setHead(e.target.value)}
-                disabled={tagsLoading || tags.length === 0}
-              >
-                {tagsLoading && <option value="">Loading tags…</option>}
-                {!tagsLoading && tags.length === 0 && (
-                  <option value="">{head || "—"}</option>
-                )}
-                {tags.map((t) => (
-                  <option key={t} value={t}>
-                    {t}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          <button
-            style={{
-              ...S.checkBtn,
-              opacity: btnDisabled ? 0.45 : 1,
-              cursor: btnDisabled ? "not-allowed" : "pointer",
-            }}
-            type="submit"
-            disabled={btnDisabled}
-          >
-            {loading ? "CHECKING…" : "CHECK RELEASE →"}
-          </button>
-        </form>
-
-        {/* Footer */}
-        <div style={S.inputFooter}>
-          <span>SEC-AUDIT // PARSER_READY</span>
-          <span>STRICT_SHA256_VERIFY</span>
-        </div>
-      </div>
-    </div>
-  );
+        const url = repo.includes("github.com") ? repo : `https://github.com/${repo}`;
+        parseRepoUrl(url); setLoadingTags(true);
+        const fetched = await fetchRepoTags(url, { apiBase: API_BASE, cacheTtlMs: 60_000 });
+        if (!cancelled) { setTags(fetched); if (fetched.length) { setHead(fetched[0]); setBase(fetched[1] ?? fetched[0]); } }
+      } catch { if (!cancelled) setTags([]); } finally { if (!cancelled) setLoadingTags(false); }
+    }, 350);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [repo]);
+  return <main className="input-page"><div className="input-card"><div className="brand-mark">FINE<span>PRINT</span></div><span className="eyebrow">SOFTWARE RELEASE X-RAY</span><h1>Inspect what changed.</h1><p className="lead">Compare two GitHub tags and trace every changed file back to the commits and code that produced it.</p>{error && <div className="error">{error}</div>}<form onSubmit={(event) => { event.preventDefault(); onSubmit(repo.includes("github.com") ? repo : `https://github.com/${repo}`, base, head); }}><label>Repository<input value={repo} onChange={(event) => setRepo(event.target.value)} placeholder="owner/repository" required /></label><div className="tag-fields"><label>Base tag<select value={base} onChange={(event) => setBase(event.target.value)} disabled={loadingTags || !tags.length}>{tags.length ? tags.map((tag) => <option key={tag}>{tag}</option>) : <option>{base}</option>}</select></label><label>Head tag<select value={head} onChange={(event) => setHead(event.target.value)} disabled={loadingTags || !tags.length}>{tags.length ? tags.map((tag) => <option key={tag}>{tag}</option>) : <option>{head}</option>}</select></label></div><button className="primary" type="submit">{loadingTags ? "Loading tags…" : "Scan release →"}</button></form></div></main>;
 }
 
-// ---------------------------------------------------------------------------
-// ReceiptScreen
-// ---------------------------------------------------------------------------
+interface ReportData { owner: string; repo: string; base: string; head: string; commits: CommitRecord[]; verdicts: CommitVerdict[]; cappedAt?: number; totalCommits: number; }
 
-interface ReceiptData {
-  owner: string;
-  repo: string;
-  base: string;
-  head: string;
-  verdicts: CommitVerdict[];
-  commitFiles: Map<string, CommitFile[]>;
-  /** Present when the range was capped at 250 commits */
-  cappedAt?: number;
-  totalCommits?: number;
-}
-
-interface ReceiptScreenProps {
-  data: ReceiptData;
-  onReset: () => void;
-}
-
-function ReceiptScreen({ data, onReset }: ReceiptScreenProps) {
-  const { owner, repo, base, head, verdicts, commitFiles, cappedAt, totalCommits } = data;
-  const { routine: routineCount, flagged: adjustedCount } =
-    computeHealthCounts(verdicts);
-  const shortSha = verdicts[0]?.sha.slice(0, 8).toUpperCase() ?? "00000000";
-
-  // Sort: adjusted-first, then routine; then collapse runs
-  const sortedVerdicts = sortVerdictsForDisplay(verdicts);
-  const receiptRuns = buildReceiptRuns(sortedVerdicts);
-
-  function handleCopyRaw() {
-    const draft = buildReleaseNotesDraft(verdicts, base, head);
-    navigator.clipboard.writeText(draft).catch(() => {
-      // fallback: show in prompt
-      window.prompt("Copy release notes:", draft);
+function Report({ data, onReset }: { data: ReportData; onReset: () => void }) {
+  const model = useMemo(() => buildReleaseXray(data.commits, data.verdicts), [data.commits, data.verdicts]);
+  const [category, setCategory] = useState<XrayCategory | null>(null);
+  const [selected, setSelected] = useState<XrayFile | null>(model.files[0] ?? null);
+  const [selectedCommitSha, setSelectedCommitSha] = useState<string | undefined>(model.files[0]?.commits[0]?.commit.sha);
+  const [selectedFindingKey, setSelectedFindingKey] = useState<string | undefined>();
+  const [commitOnlyFinding, setCommitOnlyFinding] = useState<CheckFinding | undefined>();
+  const adjusted = data.verdicts.filter((verdict) => verdict.status === "adjusted").length;
+  const releaseStatus = data.cappedAt
+    ? "Incomplete inspection"
+    : model.findings > 0
+      ? "Review required"
+      : "No findings detected";
+  const handleFinding = (commitSha: string, finding: CheckFinding) => {
+    const selection = resolveFindingSelection(model, commitSha, finding);
+    setSelectedCommitSha(commitSha);
+    setSelectedFindingKey(findingKey(commitSha, finding));
+    if (selection.file) {
+      setCategory(selection.file.category);
+      setSelected(selection.file);
+      setCommitOnlyFinding(undefined);
+    } else {
+      setCategory(null);
+      setSelected(null);
+      setCommitOnlyFinding(finding);
+    }
+    window.requestAnimationFrame(() => {
+      document.getElementById("inspection-details")?.scrollIntoView({ behavior: "smooth", block: "start" });
     });
-  }
+  };
+  const handleFile = (file: XrayFile) => {
+    setSelected(file);
+    setCommitOnlyFinding(undefined);
+    setSelectedFindingKey(undefined);
+    setSelectedCommitSha(file.commits[0]?.commit.sha);
+  };
+  const commitOnly = selectedCommitSha
+    ? data.commits.find((commit) => commit.sha === selectedCommitSha)
+    : undefined;
+  const commitOnlyVerdict = selectedCommitSha
+    ? data.verdicts.find((verdict) => verdict.sha === selectedCommitSha)
+    : undefined;
 
   return (
-    <div style={{ ...S.receiptOuter, ...S.fadeIn }}>
-      {/* Receipt card */}
-      <div style={S.receiptCard}>
-        {/* Muted receipt ID — barely visible */}
-        <div style={S.receiptMeta}>
-          #{shortSha}
+    <main className="report-page">
+      <header className="report-header">
+        <div className="brand-mark">FINE<span>PRINT</span></div>
+        <div className="header-actions">
+          <a href={`https://github.com/${data.owner}/${data.repo}`} target="_blank" rel="noreferrer">{data.owner}/{data.repo} ↗</a>
+          <button type="button" onClick={() => window.print()}>Export</button>
+          <button type="button" className="primary small" onClick={onReset}>New audit</button>
         </div>
+      </header>
 
-        {/* Large-range banner */}
-        {cappedAt && totalCommits && (
-          <div style={S.largeBanner}>
-            Large release: showing the most recent {cappedAt} of {totalCommits} commits.
-          </div>
+      <section className="release-identity">
+        <div>
+          <span className="eyebrow">RELEASE PACKAGE</span>
+          <h1>{data.base} <span>→</span> {data.head}</h1>
+          <p>{data.owner}/{data.repo} · {data.verdicts.length} commits analyzed · {model.uniqueFiles} unique files</p>
+        </div>
+        <div className="release-status-block">
+          <span className={`release-status ${data.cappedAt ? "incomplete" : model.findings > 0 ? "review" : "clear"}`}>{releaseStatus}</span>
+          <div className="identity-stats"><b>{model.findings}</b><span>findings</span><b>{adjusted}</b><span>commits flagged</span></div>
+        </div>
+      </section>
+
+      {data.cappedAt && <div className="cap-notice">This comparison reached the {data.cappedAt}-commit limit: {data.verdicts.length} of {data.totalCommits} commits were analyzed. The report is incomplete.</div>}
+
+      <Scanner
+        model={model}
+        selectedCategory={category}
+        selectedFile={selected}
+        onCategory={(next) => {
+          setCategory(next);
+          setCommitOnlyFinding(undefined);
+          setSelected(next ? model.files.find((file) => file.category === next) ?? null : model.files[0] ?? null);
+          setSelectedFindingKey(undefined);
+        }}
+        onFile={handleFile}
+      />
+
+      <FindingSummary model={model} onFinding={handleFinding} />
+
+      <section className="explorer" id="inspection-details">
+        <div className="explorer-list">
+          <span className="eyebrow">CHANGED FILES</span>
+          <h2>{category ?? "Complete release"}</h2>
+          <FileExplorer model={model} selectedCategory={category} selectedFile={selected} onFile={handleFile} />
+        </div>
+        {selected ? (
+          <FileDetails file={selected} owner={data.owner} repo={data.repo} initialCommitSha={selectedCommitSha} selectedFindingKey={selectedFindingKey} onFinding={handleFinding} />
+        ) : commitOnly && commitOnlyVerdict ? (
+          <CommitEvidenceDetails commit={commitOnly} verdict={commitOnlyVerdict} finding={commitOnlyFinding} owner={data.owner} repo={data.repo} />
+        ) : (
+          <div className="details empty-state">No files changed in this release.</div>
         )}
+      </section>
 
-        {/* Version header */}
-        <div style={S.receiptVersion}>
-          {base} → {head}
-        </div>
-        <div style={S.receiptSub}>
-          {verdicts.length} items · release receipt
-        </div>
-
-        {/* Health bar + legend */}
-        <HealthBar routine={routineCount} flagged={adjustedCount} />
-
-        <div style={S.dashedDivider} />
-
-        {/* Commit rows (adjusted-first, with ok-run collapsing at bottom) */}
-        {receiptRuns.map((run, idx) =>
-          run.kind === "group" ? (
-            <CollapsibleOkGroup
-              key={`group-${idx}`}
-              verdicts={run.verdicts}
-              allFilesMap={commitFiles}
-              owner={owner}
-              repo={repo}
-              base={base}
-              head={head}
-            />
-          ) : (
-            <CommitRow
-              key={run.verdict.sha}
-              verdict={run.verdict}
-              allFiles={commitFiles.get(run.verdict.sha) ?? []}
-              owner={owner}
-              repo={repo}
-              base={base}
-              head={head}
-            />
-          )
-        )}
-
-        {/* Total */}
-        <div style={S.totalRow}>
-          <span>TOTAL —</span>
-          <span>
-            <span style={S.totalAdjusted}>
-              {adjustedCount} of {verdicts.length} adjusted
-            </span>
-          </span>
-        </div>
-      </div>
-
-      {/* Jagged edge */}
-      <div style={{ width: "100%", maxWidth: 560 }}>
-        <JaggedEdge />
-      </div>
-
-      {/* Bottom bar */}
-      <div style={S.receiptBottom}>
-        <button style={S.bottomBtn} onClick={onReset}>
-          ← check another release
-        </button>
-        <button style={S.bottomBtn} onClick={handleCopyRaw}>
-          copy raw receipt
-        </button>
-      </div>
-    </div>
+      <VerificationChecks verdicts={data.verdicts} />
+      <section className="summary">
+        <span className="eyebrow">SUMMARY</span>
+        <p>{model.findings ? `FinePrint found ${model.findings} rule-based finding${model.findings === 1 ? "" : "s"} across this release. Select a finding or file to inspect the associated commit and available patch evidence.` : "No current verification rule flagged this release. That is not proof that every change is safe; it means the configured checks found no finding."}</p>
+      </section>
+    </main>
   );
 }
-
-// ---------------------------------------------------------------------------
-// App — root component
-// ---------------------------------------------------------------------------
-
-type AppScreen = "input" | "loading" | "receipt";
 
 export default function App() {
-  const [screen, setScreen] = useState<AppScreen>("input");
+  const [screen, setScreen] = useState<"input" | "loading" | "report">("input");
   const [error, setError] = useState<string | null>(null);
-  const [receiptData, setReceiptData] = useState<ReceiptData | null>(null);
-
-  // Persisted input values — seeded from defaults on first mount, then kept
-  // across "check another release" navigation so the user's last entries survive.
-  const [inputRepoUrl, setInputRepoUrl] = useState(DEFAULT_REPO);
-  const [inputBase, setInputBase] = useState(DEFAULT_BASE_TAG);
-  const [inputHead, setInputHead] = useState(DEFAULT_HEAD_TAG);
-
-  // Live fetch-progress for the loading screen
-  const [fetchProgress, setFetchProgress] = useState<{ fetched: number; total: number } | null>(null);
-
-  const handleValuesChange = useCallback((repoUrl: string, base: string, head: string) => {
-    setInputRepoUrl(repoUrl);
-    setInputBase(base);
-    setInputHead(head);
+  const [data, setData] = useState<ReportData | null>(null);
+  const [progress, setProgress] = useState<{ fetched: number; total: number } | null>(null);
+  const handleCheck = useCallback(async (repoUrl: string, base: string, head: string) => {
+    setError(null); setProgress(null); setScreen("loading");
+    try {
+      const { owner, repo } = parseRepoUrl(repoUrl);
+      const result = await fetchCommitRange(repoUrl, base, head, { apiBase: API_BASE, cacheTtlMs: 60_000, onProgress: (fetched, total) => setProgress({ fetched, total }) });
+      setData({ owner, repo, base, head, commits: result.commits, verdicts: runChecks(result.commits, base, head), cappedAt: result.cappedAt, totalCommits: result.totalCommits });
+      setScreen("report");
+    } catch (caught) { setError(friendlyError(caught)); setScreen("input"); }
   }, []);
-
-  const handleCheck = useCallback(
-    async (repoUrl: string, base: string, head: string) => {
-      setError(null);
-      setFetchProgress(null);
-      setScreen("loading");
-
-      try {
-        const { owner, repo } = parseRepoUrl(repoUrl);
-
-        // Fetch commit range from GitHub
-        const token = (import.meta as { env?: { VITE_GITHUB_TOKEN?: string } })
-          .env?.VITE_GITHUB_TOKEN;
-        const { commits, totalCommits, cappedAt } = await fetchCommitRange(
-          repoUrl,
-          base,
-          head,
-          {
-            token,
-            onProgress: (fetched, total) => setFetchProgress({ fetched, total }),
-          }
-        );
-
-        // Run checks
-        const verdicts = runChecks(commits, base, head);
-
-        // Build sha → files map for diff rendering
-        const commitFiles = new Map<string, CommitFile[]>();
-        for (const c of commits) {
-          commitFiles.set(c.sha, c.files);
-        }
-
-        setReceiptData({ owner, repo, base, head, verdicts, commitFiles, cappedAt, totalCommits });
-        setScreen("receipt");
-      } catch (err) {
-        const friendly =
-          err instanceof Error ? err.message : String(err);
-        setError(friendly);
-        setScreen("input");
-      }
-    },
-    []
-  );
-
-  const handleReset = useCallback(() => {
-    setReceiptData(null);
-    setError(null);
-    setFetchProgress(null);
-    setScreen("input");
-  }, []);
-
-  if (screen === "loading") {
-    const progressLabel = fetchProgress
-      ? `FETCHED ${fetchProgress.fetched} OF ${fetchProgress.total} COMMITS…`
-      : "FETCHING COMMITS…";
-    return (
-      <div style={{ ...S.page, ...S.fadeIn }}>
-        <div style={S.loadingCard}>
-          <span style={S.loadingLabel}>FINEPRINT · RELEASE AUDIT</span>
-          <span style={S.loadingText}>{progressLabel}</span>
-          <div style={S.loadingTrack}>
-            <div style={S.loadingBar} />
-          </div>
-          <span style={{ ...S.loadingLabel, color: "#bbb" }}>
-            ANALYZING COMMIT RANGE — PLEASE WAIT
-          </span>
-        </div>
-      </div>
-    );
-  }
-
-  if (screen === "receipt" && receiptData) {
-    return <ReceiptScreen data={receiptData} onReset={handleReset} />;
-  }
-
-  return (
-    <InputScreen
-      onSubmit={handleCheck}
-      onValuesChange={handleValuesChange}
-      initialRepoUrl={inputRepoUrl}
-      initialBase={inputBase}
-      initialHead={inputHead}
-      loading={false}
-      error={error}
-    />
-  );
+  if (screen === "loading") return <main className="loading-page"><div className="loading-card"><div className="brand-mark">FINE<span>PRINT</span></div><span className="eyebrow">SCANNING RELEASE PACKAGE</span><h1>{progress ? `${progress.fetched} of ${progress.total} commits` : "Preparing inspection…"}</h1><div className="loading-bar" /></div></main>;
+  if (screen === "report" && data) return <Report data={data} onReset={() => { setData(null); setScreen("input"); }} />;
+  return <InputScreen onSubmit={handleCheck} error={error} initialRepo={DEFAULT_REPO} initialBase={DEFAULT_BASE} initialHead={DEFAULT_HEAD} />;
 }
