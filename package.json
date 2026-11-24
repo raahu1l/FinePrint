@@ -12,7 +12,7 @@
     "build:ui": "vite build",
     "preview": "vite preview",
     "test": "node --experimental-vm-modules node_modules/jest-cli/bin/jest.js",
-    "test:functions": "node --test netlify/functions/github.test.mjs",
+    "test:functions": "node --test tests/github.test.mjs",
     "test:typecheck": "tsc --noEmit -p tests/tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.lib.json && tsc --noEmit -p tsconfig.ui.json"
   },
