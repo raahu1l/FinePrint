@@ -152,9 +152,14 @@
       .finding-kicker { color: #8065ee; font-size: 10px; font-weight: 900; text-transform: uppercase; letter-spacing: .08em; }
       .finding-card h3 { margin: 5px 0 6px; color: #26314e; font-size: 14px; line-height: 1.35; }
       .finding-card h3 code { margin-right: 4px; }
+      .finding-area-group { margin: 8px 0; }
+      .finding-area-group > strong, .finding-files > strong { color: #78839a; font-size: 9px; letter-spacing: .08em; }
       .finding-chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
       .finding-chips span { padding: 4px 7px; border-radius: 999px; color: #9a4050; background: #fff0f2; font-size: 10px; font-weight: 800; }
       .finding-card p { margin: 0 0 7px; color: #71809a; font-size: 12px; overflow-wrap: anywhere; }
+      .finding-card .finding-files { color: #53617c; font-family: ui-monospace, monospace; font-size: 11px; line-height: 1.6; }
+      .finding-card .finding-files strong { font-family: inherit; }
+      .finding-card .finding-explanation { margin-top: 9px; color: #58647d; }
       .finding-card code { color: #52607a; font-size: 10px; }
       .finding-card button { border: 0; border-radius: 7px; padding: 9px 11px; background: #f0efff; color: #604ab9; font-size: 11px; font-weight: 900; white-space: nowrap; }
       .finding-card button:hover { background: #e4e0ff; }
@@ -164,6 +169,10 @@
       .commit-finding { margin: 12px 0 18px; }
       .commit-file-list { margin: 8px 0 18px; padding: 0; list-style: none; }
       .commit-file-list li { padding: 7px 0; border-bottom: 1px solid #edf0f5; color: #53617c; font-family: ui-monospace, monospace; font-size: 11px; }
+      .finding-file-selection .commit-file-list { margin-bottom: 10px; }
+      .finding-file-selection .commit-file-list button { padding: 0; border: 0; color: #604ab9; background: transparent; font: inherit; text-align: left; cursor: pointer; }
+      .finding-file-selection .commit-file-list button[aria-current="true"] { color: #26314e; font-weight: 800; }
+      .back-to-findings { display: inline-block; margin: 0 0 8px; color: #6654c9; font-size: 12px; text-decoration: none; }
       .evidence-file { display: block; margin-top: 12px; color: #65718a; font-family: ui-monospace, monospace; font-size: 11px; }
       .routine-toggle { width: 100%; padding: 12px; border: 0; color: #6654c9; background: transparent; text-align: left; }
       .routine-commit { padding: 8px 12px; color: #73809b; font-size: 12px; }

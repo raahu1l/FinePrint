@@ -14,7 +14,6 @@ import {
   classifyFile,
   LARGE_RELEASE_FILE_THRESHOLD,
   type ReleaseXrayModel,
-  type ReleaseFinding,
   type XrayCategory,
   type XrayFile,
   type XrayFileState,
@@ -102,14 +101,45 @@ export function normalizeRepositoryInput(value: string): {
   return { url: `https://github.com/${owner}/${repo}`, owner, repo };
 }
 
-function findingAction(check: CheckFinding["check"]): string {
-  if (check === "area-mismatch") {
-    return "Inspect the commit diff for code areas omitted from the commit message.";
+function areaLabel(area: string): string {
+  const labels: Record<string, string> = {
+    api: "Backend / API",
+    auth: "Authentication",
+    ci: "CI / Infrastructure",
+    config: "Configuration",
+    db: "Database",
+    deps: "Dependencies",
+    docs: "Documentation",
+    test: "Tests",
+    tests: "Tests",
+    ui: "UI / Components",
+  };
+  return labels[area.toLowerCase()] ?? area.replace(/(^|[-_\s])\w/g, (letter) => letter.toUpperCase());
+}
+
+function findingExplanation(finding: CheckFinding, undeclaredAreas: string[]): string {
+  if (finding.check === "area-mismatch") {
+    if (undeclaredAreas.length === 1 && undeclaredAreas[0].toLowerCase() === "ui") {
+      return "UI changes were detected but not mentioned in the commit message.";
+    }
+    if (undeclaredAreas.length === 1 && ["test", "tests"].includes(undeclaredAreas[0].toLowerCase())) {
+      return "Test files were modified without a corresponding test-area mention.";
+    }
+    const areas = undeclaredAreas.map(areaLabel);
+    return `Changes in ${areas.length ? areas.join(" and ") : "the affected areas"} were detected but not mentioned in the commit message.`;
   }
-  if (check === "semver") {
-    return "Inspect the affected file for removed exports, changed signatures, or config schema removals.";
+  if (finding.check === "dependency") {
+    return "A major dependency-version increase was detected.";
   }
-  return "Compare removed and added dependency versions in the manifest patch.";
+  return "A possible breaking change was detected by the semver check.";
+}
+
+function findingUndeclaredAreas(finding: CheckFinding): string[] {
+  if (finding.check !== "area-mismatch") return [];
+  return [...new Set(
+    [...finding.explanation.matchAll(/area changed but not mentioned in commit message:\s*([^;]+)/gi)]
+      .map((match) => match[1].trim())
+  )];
 }
 
 function DiffView({ patch }: { patch: string | null }) {
@@ -244,7 +274,42 @@ function FileExplorer({ model, selectedCategory, selectedFile, onFile }: { model
 }
 
 export function findingKey(commitSha: string, finding: CheckFinding): string {
-  return `${commitSha}-${finding.check}-${finding.explanation}`;
+  return `${commitSha}-${finding.check}-${finding.explanation}-${finding.affectedFilenames?.join(",") ?? ""}`;
+}
+
+export function resolveFindingFiles(
+  model: ReleaseXrayModel,
+  commitSha: string,
+  finding: CheckFinding
+): XrayFile[] {
+  const affected = finding.affectedFilenames ?? [];
+  if (affected.length === 0) return [];
+  return model.files.filter((candidate) =>
+    candidate.commits.some((item) => item.commit.sha === commitSha) &&
+    affected.some((filename) => findingFileMatches(candidate, commitSha, filename))
+  );
+}
+
+function findingFileMatches(file: XrayFile, commitSha: string, filename: string): boolean {
+  return filename === file.filename ||
+    file.previousFilenames.includes(filename) ||
+    file.commits.some((item) =>
+      item.commit.sha === commitSha &&
+      (item.file.filename === filename || item.file.previousFilename === filename)
+    );
+}
+
+function findingAffectedFilenames(
+  model: ReleaseXrayModel,
+  commitSha: string,
+  finding: CheckFinding
+): string[] {
+  return [...new Set((finding.affectedFilenames ?? []).map((filename) =>
+    model.files.find((file) =>
+      file.commits.some((item) => item.commit.sha === commitSha) &&
+      findingFileMatches(file, commitSha, filename)
+    )?.filename ?? filename
+  ))];
 }
 
 export function resolveFindingSelection(
@@ -252,17 +317,7 @@ export function resolveFindingSelection(
   commitSha: string,
   finding: CheckFinding
 ): { file: XrayFile | null; commitSha: string } {
-  if (finding.affectedFilenames?.length) {
-    const affected = finding.affectedFilenames;
-    const file = model.files.find((candidate) =>
-      candidate.commits.some((item) => item.commit.sha === commitSha) &&
-      affected.some((filename) => filename === candidate.filename || candidate.previousFilenames.includes(filename))
-    ) ?? model.files.find((candidate) =>
-      affected.some((filename) => filename === candidate.filename || candidate.previousFilenames.includes(filename))
-    ) ?? null;
-    return { file, commitSha };
-  }
-  return { file: null, commitSha };
+  return { file: resolveFindingFiles(model, commitSha, finding)[0] ?? null, commitSha };
 }
 
 export function FileDetails({
@@ -270,6 +325,9 @@ export function FileDetails({
   owner,
   repo,
   initialCommitSha,
+  finding,
+  findingFiles,
+  onAffectedFile,
   selectedFindingKey,
   onFinding,
 }: {
@@ -277,12 +335,18 @@ export function FileDetails({
   owner: string;
   repo: string;
   initialCommitSha?: string;
+  finding?: CheckFinding;
+  findingFiles?: XrayFile[];
+  onAffectedFile?: (file: XrayFile) => void;
   selectedFindingKey?: string;
   onFinding?: (commitSha: string, finding: CheckFinding) => void;
 }) {
-  const [commitSha, setCommitSha] = useState(initialCommitSha ?? file.commits[0]?.commit.sha ?? "");
-  const selected = file.commits.find((item) => item.commit.sha === commitSha) ?? file.commits[0];
-  useEffect(() => setCommitSha(initialCommitSha ?? file.commits[0]?.commit.sha ?? ""), [file, initialCommitSha]);
+  const targetCommitSha = initialCommitSha && file.commits.some((item) => item.commit.sha === initialCommitSha)
+    ? initialCommitSha
+    : file.commits[0]?.commit.sha ?? "";
+  const [commitSha, setCommitSha] = useState(targetCommitSha);
+  const selected = file.commits.find((item) => item.commit.sha === commitSha);
+  useEffect(() => setCommitSha(targetCommitSha), [file, targetCommitSha]);
   if (!selected) return null;
   const { commit, verdict } = selected;
   return (
@@ -302,8 +366,15 @@ export function FileDetails({
           aria-pressed={selectedFindingKey === key}
         ><strong>{finding.check}</strong><span>{finding.explanation}</span></button>;
       })}{verdict.findings?.length === 0 && <p className="muted">No finding. This is not proof that the change is safe.</p>}</div>
+      {finding && findingFiles && findingFiles.length > 1 && <div className="finding-file-selection">
+        <span className="eyebrow">FILES FOR THIS FINDING</span>
+        <ul className="commit-file-list">{findingFiles.map((affectedFile) => <li key={affectedFile.filename}>
+          <button type="button" aria-current={affectedFile.filename === file.filename ? "true" : undefined} onClick={() => onAffectedFile?.(affectedFile)}>{affectedFile.filename}</button>
+        </li>)}</ul>
+      </div>}
+      {finding && <a className="back-to-findings" href="#findings-overview">Back to findings</a>}
       <div className="evidence-heading"><span className="eyebrow">CODE EVIDENCE</span><a href={`https://github.com/${owner}/${repo}/commit/${commit.sha}`} target="_blank" rel="noreferrer">Open on GitHub ↗</a></div>
-      {file.hasUnavailableEvidence && selected.file.patch === null
+      {selected.file.patch === null
         ? <div><p className="empty-evidence">Evidence unavailable: GitHub did not provide a patch for this file. It may be binary or its diff content may be unavailable.</p>{verdict.findings?.length ? <p className="muted">The verification finding below remains rule-based; it is not strengthened or replaced by fabricated diff evidence.</p> : null}</div>
         : <DiffView patch={selected.file.patch} />}
     </aside>
@@ -327,51 +398,53 @@ export function FindingSummary({
       </section>
     );
   }
-  const findingsByCommit = new Map<string, ReleaseFinding[]>();
-  for (const finding of model.findingItems) {
-    const existing = findingsByCommit.get(finding.commitSha) ?? [];
-    existing.push(finding);
-    findingsByCommit.set(finding.commitSha, existing);
-  }
-  const commitCount = findingsByCommit.size;
+  const commitCount = new Set(model.findingItems.map((finding) => finding.commitSha)).size;
+  const undeclaredAreaCount = new Set(model.findingItems.flatMap((finding) =>
+    findingUndeclaredAreas(finding).map((area) => `${finding.commitSha}:${area.toLowerCase()}`)
+  )).size;
+  const affectedFileCount = new Set(model.findingItems.flatMap((finding) =>
+    findingAffectedFilenames(model, finding.commitSha, finding)
+  )).size;
   return (
-    <section className="findings-section">
-      <div className="section-heading"><span className="eyebrow">CHANGES REQUIRING ATTENTION</span><h2>{commitCount} commit{commitCount === 1 ? "" : "s"} · {model.findingItems.length} finding{model.findingItems.length === 1 ? "" : "s"} to review</h2></div>
+    <section className="findings-section" id="findings-overview">
+      <div className="section-heading"><span className="eyebrow">CHANGES REQUIRING ATTENTION</span><h2>{commitCount} commit{commitCount === 1 ? "" : "s"} · {model.findingItems.length} finding{model.findingItems.length === 1 ? "" : "s"} · {undeclaredAreaCount} undeclared area{undeclaredAreaCount === 1 ? "" : "s"} · {affectedFileCount} affected file{affectedFileCount === 1 ? "" : "s"}</h2></div>
       <div className="finding-cards">
-        {[...findingsByCommit.entries()].map(([commitSha, findings]) => {
-          const areaFindings = findings.filter((finding) => finding.check === "area-mismatch");
-          const undeclaredAreas = [...new Set(areaFindings.flatMap((finding) =>
-            [...finding.explanation.matchAll(/area changed but not mentioned in commit message:\s*([^;]+)/gi)]
-              .map((match) => match[1].trim())
-          ))];
-          const first = findings[0];
-          const affected = [...new Set(findings.flatMap((finding) => finding.affectedFilenames ?? []))];
-          const commitFiles = first.commitSha
-            ? model.files.flatMap((file) => file.commits.filter((item) => item.commit.sha === commitSha).map((item) => item.file.filename))
+        {model.findingItems.map((finding) => {
+          const { commitSha } = finding;
+          const undeclaredAreas = findingUndeclaredAreas(finding);
+          const affectedFiles = findingAffectedFilenames(model, commitSha, finding);
+          const commitFiles = model.files.flatMap((file) =>
+            file.commits.filter((item) => item.commit.sha === commitSha).map((item) => item.file.filename)
+          );
+          const undeclaredCategories = new Set(undeclaredAreas.map((area) => ({
+            ui: "UI / Components",
+            test: "Tests",
+            tests: "Tests",
+            api: "Backend / API",
+            docs: "Documentation",
+            deps: "Dependencies",
+            config: "Configuration",
+            ci: "CI / Infrastructure",
+          }[area.toLowerCase()])).filter((category): category is string => Boolean(category)));
+          const additionalCategories = finding.check === "area-mismatch"
+            ? [...new Set(commitFiles.map((filename) => classifyFile(filename)))]
+                .filter((category) => !undeclaredCategories.has(category))
             : [];
-          const actualCategories = [...new Set(commitFiles.map((filename) => classifyFile(filename)))];
-          const declaredText = subject(first.commitMessage);
-          const declaredAreas = declaredText.match(/\b(ui|frontend|components|api|backend|server|test|tests|testing|spec|docs|documentation|deps|dependencies|dependency|config|configuration|ci)\b/gi) ?? [];
-          const key = findingKey(commitSha, first);
-          const selected = findings.some((finding) => findingKey(commitSha, finding) === selectedFindingKey);
-          const checkTypes = [...new Set(findings.map((finding) => findingTitles[finding.check]))];
+          const key = findingKey(commitSha, finding);
+          const selected = selectedFindingKey === key;
           return (
-            <article className={`finding-card ${first.check}${selected ? " selected" : ""}`} key={commitSha} aria-label={`${checkTypes.join(", ")} in commit ${commitSha.slice(0, 7)}${selected ? ", selected" : ""}`}>
+            <article className={`finding-card ${finding.check}${selected ? " selected" : ""}`} key={key} aria-label={`${findingTitles[finding.check]} in commit ${commitSha.slice(0, 7)}${selected ? ", selected" : ""}`}>
               <div>
-                <span className="finding-kicker">{checkTypes.join(" · ")}</span>
-                <h3><code>{commitSha.slice(0, 7)}</code> · {declaredText}</h3>
-                {undeclaredAreas.length > 0 && <div className="finding-chips" aria-label="Areas not mentioned">{undeclaredAreas.map((area) => <span key={area}>Not mentioned: {area}</span>)}</div>}
-                {actualCategories.length > 0 && <p><strong>Actual diff areas:</strong> {actualCategories.join(" · ")}</p>}
-                {declaredAreas.length > 0 && <p><strong>Declared areas:</strong> {[...new Set(declaredAreas.map((area) => area.toLowerCase()))].join(" · ")}</p>}
-                {affected.length > 0
-                  ? <p><strong>Affected files:</strong> {affected.slice(0, 2).join(", ")}{affected.length > 2 ? ` + ${affected.length - 2} more files` : ""}</p>
+                <span className="finding-kicker">{findingTitles[finding.check]}</span>
+                <h3><code>{commitSha.slice(0, 7)}</code> · {subject(finding.commitMessage)}</h3>
+                {undeclaredAreas.length > 0 && <div className="finding-area-group"><strong>NOT MENTIONED</strong><div className="finding-chips" aria-label="Areas not mentioned">{undeclaredAreas.map((area) => <span key={area}>{areaLabel(area)}</span>)}</div></div>}
+                {additionalCategories.length > 0 && <p><strong>Other changed areas:</strong> {additionalCategories.join(" · ")}</p>}
+                {affectedFiles.length > 0
+                  ? <p className="finding-files"><strong>AFFECTED FILES</strong><br />{affectedFiles.slice(0, 2).join(", ")}{affectedFiles.length > 2 ? ` + ${affectedFiles.length - 2} more files` : ""}</p>
                   : <p>Commit-level finding; exact affected file unavailable</p>}
-                <p className="finding-explanation">{areaFindings.length > 0
-                  ? `The commit describes or mentions ${declaredAreas.length ? declaredAreas.join(", ") : "limited areas"}, while the existing area-mismatch rule identified ${undeclaredAreas.join(", ") || "undisclosed areas"} in the changed paths.`
-                  : first.explanation}</p>
-                <p className="finding-action"><strong>Next:</strong> {findings.map((finding) => findingAction(finding.check)).filter((value, index, values) => values.indexOf(value) === index).join(" ")}</p>
+                <p className="finding-explanation">{findingExplanation(finding, undeclaredAreas)}</p>
               </div>
-              <button type="button" onClick={() => onFinding(commitSha, first)} aria-pressed={selected}>View evidence <span aria-hidden="true">→</span></button>
+              <button type="button" onClick={() => onFinding(commitSha, finding)} aria-pressed={selected}>View evidence <span aria-hidden="true">→</span></button>
             </article>
           );
         })}
@@ -393,11 +466,11 @@ export function CommitEvidenceDetails({
   owner: string;
   repo: string;
 }) {
-  const patchedFiles = commit.files.filter((file) => file.patch !== null);
   return (
     <aside className="details commit-only-details" id="inspection-details">
       <div className="details-heading"><span className="eyebrow">COMMIT-LEVEL EVIDENCE</span><h2>{subject(commit.message)}</h2><code>{commit.sha.slice(0, 7)}</code></div>
       {finding ? <div className="finding commit-finding"><strong>{findingTitles[finding.check]}</strong><span>{finding.explanation}</span></div> : null}
+      {finding && <a className="back-to-findings" href="#findings-overview">Back to findings</a>}
       {verdict.status === "mechanical" ? <p className="muted">Mechanical commit excluded from verification.</p> : <p className="muted">{verdict.status === "ok" ? "No current verification rule flagged this commit." : "This commit needs review."}</p>}
       {commit.files.length > 0 && (
         <>
@@ -406,14 +479,14 @@ export function CommitEvidenceDetails({
         </>
       )}
       <div className="evidence-heading"><span className="eyebrow">CODE EVIDENCE</span><a href={`https://github.com/${owner}/${repo}/commit/${commit.sha}`} target="_blank" rel="noreferrer">Open on GitHub ↗</a></div>
-      {patchedFiles.length > 0
-        ? patchedFiles.map((file) => (
+      {commit.files.length > 0
+        ? commit.files.map((file) => (
             <div className="commit-evidence-file" key={file.filename}>
               <span className="evidence-file">{file.filename}</span>
               <DiffView patch={file.patch} />
             </div>
           ))
-        : <p className="empty-evidence">Evidence unavailable: GitHub did not provide an inspectable patch for this commit. No fake diff is shown.</p>}
+        : <p className="empty-evidence">Evidence unavailable: this commit has no file-level patch data. No fake diff is shown.</p>}
     </aside>
   );
 }
@@ -565,13 +638,13 @@ export function InputScreen({ onSubmit, error, initialRepo, initialBase, initial
 
 interface ReportData { owner: string; repo: string; base: string; head: string; commits: CommitRecord[]; verdicts: CommitVerdict[]; cappedAt?: number; totalCommits: number; }
 
-function Report({ data, onReset }: { data: ReportData; onReset: () => void }) {
+export function Report({ data, onReset }: { data: ReportData; onReset: () => void }) {
   const model = useMemo(() => buildReleaseXray(data.commits, data.verdicts), [data.commits, data.verdicts]);
   const [category, setCategory] = useState<XrayCategory | null>(null);
   const [selected, setSelected] = useState<XrayFile | null>(model.files[0] ?? null);
   const [selectedCommitSha, setSelectedCommitSha] = useState<string | undefined>(model.files[0]?.commits[0]?.commit.sha);
   const [selectedFindingKey, setSelectedFindingKey] = useState<string | undefined>();
-  const [commitOnlyFinding, setCommitOnlyFinding] = useState<CheckFinding | undefined>();
+  const [activeFinding, setActiveFinding] = useState<{ commitSha: string; finding: CheckFinding } | undefined>();
   const adjusted = data.verdicts.filter((verdict) => verdict.status === "adjusted").length;
   const releaseStatus = data.cappedAt
     ? "Incomplete inspection"
@@ -582,14 +655,13 @@ function Report({ data, onReset }: { data: ReportData; onReset: () => void }) {
     const selection = resolveFindingSelection(model, commitSha, finding);
     setSelectedCommitSha(commitSha);
     setSelectedFindingKey(findingKey(commitSha, finding));
+    setActiveFinding({ commitSha, finding });
     if (selection.file) {
       setCategory(selection.file.category);
       setSelected(selection.file);
-      setCommitOnlyFinding(undefined);
     } else {
       setCategory(null);
       setSelected(null);
-      setCommitOnlyFinding(finding);
     }
     window.requestAnimationFrame(() => {
       document.getElementById("inspection-details")?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -597,10 +669,19 @@ function Report({ data, onReset }: { data: ReportData; onReset: () => void }) {
   };
   const handleFile = (file: XrayFile) => {
     setSelected(file);
-    setCommitOnlyFinding(undefined);
+    setActiveFinding(undefined);
     setSelectedFindingKey(undefined);
     setSelectedCommitSha(file.commits[0]?.commit.sha);
   };
+  const handleAffectedFile = (file: XrayFile) => {
+    if (!activeFinding || !file.commits.some((item) => item.commit.sha === activeFinding.commitSha)) return;
+    setCategory(file.category);
+    setSelected(file);
+    setSelectedCommitSha(activeFinding.commitSha);
+  };
+  const findingFiles = activeFinding
+    ? resolveFindingFiles(model, activeFinding.commitSha, activeFinding.finding)
+    : [];
   const commitOnly = selectedCommitSha
     ? data.commits.find((commit) => commit.sha === selectedCommitSha)
     : undefined;
@@ -639,7 +720,7 @@ function Report({ data, onReset }: { data: ReportData; onReset: () => void }) {
         selectedFile={selected}
         onCategory={(next) => {
           setCategory(next);
-          setCommitOnlyFinding(undefined);
+          setActiveFinding(undefined);
           setSelected(next ? model.files.find((file) => file.category === next) ?? null : model.files[0] ?? null);
           setSelectedFindingKey(undefined);
         }}
@@ -655,9 +736,9 @@ function Report({ data, onReset }: { data: ReportData; onReset: () => void }) {
           <FileExplorer model={model} selectedCategory={category} selectedFile={selected} onFile={handleFile} />
         </div>
         {selected ? (
-          <FileDetails file={selected} owner={data.owner} repo={data.repo} initialCommitSha={selectedCommitSha} selectedFindingKey={selectedFindingKey} onFinding={handleFinding} />
+          <FileDetails key={`${selected.filename}:${selectedCommitSha ?? ""}`} file={selected} owner={data.owner} repo={data.repo} initialCommitSha={selectedCommitSha} finding={activeFinding?.finding} findingFiles={findingFiles} onAffectedFile={handleAffectedFile} selectedFindingKey={selectedFindingKey} onFinding={handleFinding} />
         ) : commitOnly && commitOnlyVerdict ? (
-          <CommitEvidenceDetails commit={commitOnly} verdict={commitOnlyVerdict} finding={commitOnlyFinding} owner={data.owner} repo={data.repo} />
+          <CommitEvidenceDetails commit={commitOnly} verdict={commitOnlyVerdict} finding={activeFinding?.finding} owner={data.owner} repo={data.repo} />
         ) : (
           <div className="details empty-state">No files changed in this release.</div>
         )}

@@ -1,7 +1,7 @@
 
 import test, { beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { handler } from "./github.mjs";
+import { handler } from "../netlify/functions/github.mjs";
 
 const originalFetch = globalThis.fetch;
 const originalToken = process.env.GITHUB_TOKEN;
