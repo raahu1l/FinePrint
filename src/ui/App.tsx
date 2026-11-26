@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import type { CheckFinding, CommitVerdict } from "../checks/types.js";
 import { runChecks } from "../checks/checkLogic.js";
@@ -11,6 +11,7 @@ import type { CommitFile, CommitRecord } from "../github/types.js";
 import { GitHubApiError, RateLimitError } from "../github/types.js";
 import {
   buildReleaseXray,
+  classifyFile,
   LARGE_RELEASE_FILE_THRESHOLD,
   type ReleaseXrayModel,
   type ReleaseFinding,
@@ -64,6 +65,41 @@ function friendlyError(error: unknown): string {
 
 function subject(message: string): string {
   return extractSubject(message);
+}
+
+export function normalizeRepositoryInput(value: string): {
+  url: string;
+  owner: string;
+  repo: string;
+} {
+  const input = value.trim();
+  const shorthand = /^([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))\/([A-Za-z0-9_.-]{1,100})$/.exec(input);
+  const url = shorthand ? `https://github.com/${shorthand[1]}/${shorthand[2]}` : input;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error("Enter a repository as owner/repo or a full HTTPS GitHub URL.");
+  }
+
+  if (
+    parsed.protocol !== "https:" ||
+    !["github.com", "www.github.com"].includes(parsed.hostname.toLowerCase()) ||
+    parsed.search ||
+    parsed.hash
+  ) {
+    throw new Error("Use an HTTPS URL for a public GitHub repository.");
+  }
+
+  const { owner, repo } = parseRepoUrl(url);
+  if (
+    !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})?$/.test(owner) ||
+    !/^[A-Za-z0-9_.-]{1,100}$/.test(repo)
+  ) {
+    throw new Error("Enter a valid GitHub owner and repository name.");
+  }
+  return { url: `https://github.com/${owner}/${repo}`, owner, repo };
 }
 
 function findingAction(check: CheckFinding["check"]): string {
@@ -134,7 +170,7 @@ function XrayObject({ file, selected, onSelect }: { file: XrayFile; selected: bo
   );
 }
 
-function Scanner({ model, selectedCategory, selectedFile, onCategory, onFile }: {
+export function Scanner({ model, selectedCategory, selectedFile, onCategory, onFile }: {
   model: ReleaseXrayModel;
   selectedCategory: XrayCategory | null;
   selectedFile: XrayFile | null;
@@ -144,7 +180,9 @@ function Scanner({ model, selectedCategory, selectedFile, onCategory, onFile }: 
   const visible = selectedCategory
     ? model.files.filter((file) => file.category === selectedCategory)
     : model.files;
-  const isLargeRelease = model.uniqueFiles >= LARGE_RELEASE_FILE_THRESHOLD;
+  const isLargeRelease =
+    model.uniqueFiles >= LARGE_RELEASE_FILE_THRESHOLD ||
+    model.uniqueFiles > 6;
   const selectedGroup = selectedCategory
     ? model.categories.find((group) => group.category === selectedCategory)
     : null;
@@ -159,7 +197,7 @@ function Scanner({ model, selectedCategory, selectedFile, onCategory, onFile }: 
   return (
     <section className="scanner-panel">
       <div className="scanner-toolbar">
-        <div><span className="eyebrow">LIVE INSPECTION</span><h2>Release X-ray</h2></div>
+        <div><span className="eyebrow">RELEASE X-RAY · SCAN COMPLETE</span><h2>Release X-ray</h2></div>
         <div className="legend">{(["red", "amber", "green", "grey", "mixed", "unknown"] as XrayFileState[]).map((state) => <span key={state}><i style={{ background: stateColors[state] }} />{stateLabels[state]}</span>)}</div>
       </div>
       {selectedGroup && categoryCounts && (
@@ -173,7 +211,6 @@ function Scanner({ model, selectedCategory, selectedFile, onCategory, onFile }: 
         </div>
       )}
       <div className="scanner">
-        <div className="scan-line" />
         <div className="object-grid">
           {isLargeRelease && !selectedCategory
             ? model.categories.map((group) => (
@@ -290,24 +327,51 @@ export function FindingSummary({
       </section>
     );
   }
+  const findingsByCommit = new Map<string, ReleaseFinding[]>();
+  for (const finding of model.findingItems) {
+    const existing = findingsByCommit.get(finding.commitSha) ?? [];
+    existing.push(finding);
+    findingsByCommit.set(finding.commitSha, existing);
+  }
+  const commitCount = findingsByCommit.size;
   return (
     <section className="findings-section">
-      <div className="section-heading"><span className="eyebrow">CHANGES REQUIRING ATTENTION</span><h2>{model.findingItems.length} finding{model.findingItems.length === 1 ? "" : "s"} to review</h2></div>
+      <div className="section-heading"><span className="eyebrow">CHANGES REQUIRING ATTENTION</span><h2>{commitCount} commit{commitCount === 1 ? "" : "s"} · {model.findingItems.length} finding{model.findingItems.length === 1 ? "" : "s"} to review</h2></div>
       <div className="finding-cards">
-        {model.findingItems.map((finding) => {
-          const affected = finding.affectedFilenames?.join(", ");
-          const key = findingKey(finding.commitSha, finding);
-          const selected = selectedFindingKey === key;
+        {[...findingsByCommit.entries()].map(([commitSha, findings]) => {
+          const areaFindings = findings.filter((finding) => finding.check === "area-mismatch");
+          const undeclaredAreas = [...new Set(areaFindings.flatMap((finding) =>
+            [...finding.explanation.matchAll(/area changed but not mentioned in commit message:\s*([^;]+)/gi)]
+              .map((match) => match[1].trim())
+          ))];
+          const first = findings[0];
+          const affected = [...new Set(findings.flatMap((finding) => finding.affectedFilenames ?? []))];
+          const commitFiles = first.commitSha
+            ? model.files.flatMap((file) => file.commits.filter((item) => item.commit.sha === commitSha).map((item) => item.file.filename))
+            : [];
+          const actualCategories = [...new Set(commitFiles.map((filename) => classifyFile(filename)))];
+          const declaredText = subject(first.commitMessage);
+          const declaredAreas = declaredText.match(/\b(ui|frontend|components|api|backend|server|test|tests|testing|spec|docs|documentation|deps|dependencies|dependency|config|configuration|ci)\b/gi) ?? [];
+          const key = findingKey(commitSha, first);
+          const selected = findings.some((finding) => findingKey(commitSha, finding) === selectedFindingKey);
+          const checkTypes = [...new Set(findings.map((finding) => findingTitles[finding.check]))];
           return (
-            <article className={`finding-card ${finding.check}${selected ? " selected" : ""}`} key={key} aria-label={`${findingTitles[finding.check]}: ${finding.explanation}${selected ? ", selected" : ""}`}>
+            <article className={`finding-card ${first.check}${selected ? " selected" : ""}`} key={commitSha} aria-label={`${checkTypes.join(", ")} in commit ${commitSha.slice(0, 7)}${selected ? ", selected" : ""}`}>
               <div>
-                <span className="finding-kicker">{findingTitles[finding.check]}</span>
-                <h3>{finding.explanation}</h3>
-                <p>{affected ? affected : "Commit-level finding; exact affected file unavailable"}</p>
-                <code>{finding.commitSha.slice(0, 7)} · {subject(finding.commitMessage)}</code>
-                <p className="finding-action"><strong>Next:</strong> {findingAction(finding.check)}</p>
+                <span className="finding-kicker">{checkTypes.join(" · ")}</span>
+                <h3><code>{commitSha.slice(0, 7)}</code> · {declaredText}</h3>
+                {undeclaredAreas.length > 0 && <div className="finding-chips" aria-label="Areas not mentioned">{undeclaredAreas.map((area) => <span key={area}>Not mentioned: {area}</span>)}</div>}
+                {actualCategories.length > 0 && <p><strong>Actual diff areas:</strong> {actualCategories.join(" · ")}</p>}
+                {declaredAreas.length > 0 && <p><strong>Declared areas:</strong> {[...new Set(declaredAreas.map((area) => area.toLowerCase()))].join(" · ")}</p>}
+                {affected.length > 0
+                  ? <p><strong>Affected files:</strong> {affected.slice(0, 2).join(", ")}{affected.length > 2 ? ` + ${affected.length - 2} more files` : ""}</p>
+                  : <p>Commit-level finding; exact affected file unavailable</p>}
+                <p className="finding-explanation">{areaFindings.length > 0
+                  ? `The commit describes or mentions ${declaredAreas.length ? declaredAreas.join(", ") : "limited areas"}, while the existing area-mismatch rule identified ${undeclaredAreas.join(", ") || "undisclosed areas"} in the changed paths.`
+                  : first.explanation}</p>
+                <p className="finding-action"><strong>Next:</strong> {findings.map((finding) => findingAction(finding.check)).filter((value, index, values) => values.indexOf(value) === index).join(" ")}</p>
               </div>
-              <button type="button" onClick={() => onFinding(finding.commitSha, finding)} aria-pressed={selected}>View evidence <span aria-hidden="true">→</span></button>
+              <button type="button" onClick={() => onFinding(commitSha, first)} aria-pressed={selected}>View evidence <span aria-hidden="true">→</span></button>
             </article>
           );
         })}
@@ -370,26 +434,133 @@ export function CollapsibleOkGroup({ verdicts }: { verdicts: CommitVerdict[]; al
   return <>{collapse}{verdicts.map((verdict) => <div className="routine-commit" key={verdict.sha}>{subject(verdict.message)}</div>)}{collapse}</>;
 }
 
-function InputScreen({ onSubmit, error, initialRepo, initialBase, initialHead }: { onSubmit: (repo: string, base: string, head: string) => void; error: string | null; initialRepo: string; initialBase: string; initialHead: string }) {
+export function InputScreen({ onSubmit, error, initialRepo, initialBase, initialHead }: { onSubmit: (repo: string, base: string, head: string) => void; error: string | null; initialRepo: string; initialBase: string; initialHead: string }) {
   const [repo, setRepo] = useState(initialRepo);
-  const [base, setBase] = useState(initialBase);
-  const [head, setHead] = useState(initialHead);
+  const [base, setBase] = useState("");
+  const [head, setHead] = useState("");
   const [tags, setTags] = useState<string[]>([]);
   const [loadingTags, setLoadingTags] = useState(false);
+  const [tagError, setTagError] = useState<string | null>(null);
+  const [resolvedRepository, setResolvedRepository] = useState<string | null>(null);
+  const [retryCount, setRetryCount] = useState(0);
+  const submitting = useRef(false);
+
+  let normalized: ReturnType<typeof normalizeRepositoryInput> | null = null;
+  let repositoryError: string | null = null;
+  try {
+    normalized = normalizeRepositoryInput(repo);
+  } catch (caught) {
+    if (repo.trim()) repositoryError = caught instanceof Error ? caught.message : "Enter a valid GitHub repository.";
+  }
+
   useEffect(() => {
-    if (!repo.trim()) return;
+    setTags([]);
+    setBase("");
+    setHead("");
+    setResolvedRepository(null);
+    setTagError(null);
+    if (!normalized) {
+      setLoadingTags(false);
+      return;
+    }
     let cancelled = false;
+    setLoadingTags(true);
     const timer = setTimeout(async () => {
       try {
-        const url = repo.includes("github.com") ? repo : `https://github.com/${repo}`;
-        parseRepoUrl(url); setLoadingTags(true);
-        const fetched = await fetchRepoTags(url, { apiBase: API_BASE, cacheTtlMs: 60_000 });
-        if (!cancelled) { setTags(fetched); if (fetched.length) { setHead(fetched[0]); setBase(fetched[1] ?? fetched[0]); } }
-      } catch { if (!cancelled) setTags([]); } finally { if (!cancelled) setLoadingTags(false); }
+        const fetched = await fetchRepoTags(normalized!.url, { apiBase: API_BASE, cacheTtlMs: 60_000 });
+        if (!cancelled) {
+          setTags(fetched);
+          setResolvedRepository(`${normalized!.owner}/${normalized!.repo}`);
+          setHead(fetched.includes(initialHead) ? initialHead : fetched[0] ?? "");
+          setBase(fetched.includes(initialBase) ? initialBase : fetched[1] ?? fetched[0] ?? "");
+          if (fetched.length === 0) setTagError("No tags were found for this repository.");
+        }
+      } catch (caught) {
+        if (!cancelled) setTagError(friendlyError(caught));
+      } finally {
+        if (!cancelled) setLoadingTags(false);
+      }
     }, 350);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [repo]);
-  return <main className="input-page"><div className="input-card"><div className="brand-mark">FINE<span>PRINT</span></div><span className="eyebrow">SOFTWARE RELEASE X-RAY</span><h1>Inspect what changed.</h1><p className="lead">Compare two GitHub tags and trace every changed file back to the commits and code that produced it.</p>{error && <div className="error">{error}</div>}<form onSubmit={(event) => { event.preventDefault(); onSubmit(repo.includes("github.com") ? repo : `https://github.com/${repo}`, base, head); }}><label>Repository<input value={repo} onChange={(event) => setRepo(event.target.value)} placeholder="owner/repository" required /></label><div className="tag-fields"><label>Base tag<select value={base} onChange={(event) => setBase(event.target.value)} disabled={loadingTags || !tags.length}>{tags.length ? tags.map((tag) => <option key={tag}>{tag}</option>) : <option>{base}</option>}</select></label><label>Head tag<select value={head} onChange={(event) => setHead(event.target.value)} disabled={loadingTags || !tags.length}>{tags.length ? tags.map((tag) => <option key={tag}>{tag}</option>) : <option>{head}</option>}</select></label></div><button className="primary" type="submit">{loadingTags ? "Loading tags…" : "Scan release →"}</button></form></div></main>;
+  }, [repo, retryCount]);
+
+  const repositoryIsCurrent =
+    resolvedRepository === (normalized ? `${normalized.owner}/${normalized.repo}` : null);
+  const availableTags = repositoryIsCurrent ? tags : [];
+  const canCompare =
+    Boolean(normalized && repositoryIsCurrent && availableTags.length >= 2 && base && head && base !== head && !loadingTags && !submitting.current);
+
+  const updateRepository = (value: string) => {
+    submitting.current = false;
+    setRepo(value);
+  };
+
+  return (
+    <main className="input-page">
+      <div className="input-layout">
+        <section className="input-intro" aria-labelledby="input-title">
+          <div className="brand-mark">FINE<span>PRINT</span></div>
+          <span className="eyebrow">SOFTWARE RELEASE X-RAY</span>
+          <h1 id="input-title">Inspect what changed.</h1>
+          <p className="lead">Compare two GitHub tags and trace every changed file back to the commits and code that produced it.</p>
+        </section>
+        <section className="input-form-panel" aria-label="Release configuration">
+          {error && <div className="error" role="alert">{error}</div>}
+          <form onSubmit={(event) => {
+            event.preventDefault();
+            if (!canCompare || !normalized) return;
+            submitting.current = true;
+            onSubmit(normalized.url, base, head);
+          }}>
+            <div className="repository-field">
+              <label htmlFor="repository-input">REPOSITORY</label>
+              <input
+                id="repository-input"
+                value={repo}
+                onChange={(event) => updateRepository(event.target.value)}
+                placeholder="owner/repository"
+                aria-invalid={Boolean(repositoryError)}
+                aria-describedby={repositoryError ? "repository-error" : "repository-status"}
+                autoComplete="url"
+              />
+              {repositoryError
+                ? <p className="field-message error-text" id="repository-error" role="alert">{repositoryError}</p>
+                : resolvedRepository && repositoryIsCurrent
+                  ? <p className="field-message success-text" id="repository-status">Public repository · {resolvedRepository}</p>
+                  : <p className="field-message muted" id="repository-status">Use owner/repo or a GitHub HTTPS URL.</p>}
+            </div>
+            <div className="tag-fields">
+              <div className="tag-field">
+                <label htmlFor="base-tag">BASE TAG</label>
+                <select id="base-tag" value={base} onChange={(event) => setBase(event.target.value)} disabled={!repositoryIsCurrent || loadingTags || availableTags.length < 2}>
+                  {loadingTags
+                    ? <option value="">Loading tags…</option>
+                    : availableTags.length
+                      ? availableTags.map((tag) => <option key={tag} value={tag} disabled={tag === head}>{tag}</option>)
+                      : <option value="">Choose repository first</option>}
+                </select>
+              </div>
+              <div className="tag-field">
+                <label htmlFor="head-tag">HEAD TAG</label>
+                <select id="head-tag" value={head} onChange={(event) => setHead(event.target.value)} disabled={!repositoryIsCurrent || loadingTags || availableTags.length < 2}>
+                  {loadingTags
+                    ? <option value="">Loading tags…</option>
+                    : availableTags.length
+                      ? availableTags.map((tag) => <option key={tag} value={tag} disabled={tag === base}>{tag}</option>)
+                      : <option value="">Choose repository first</option>}
+                </select>
+              </div>
+            </div>
+            {loadingTags && <p className="field-message" role="status">Fetching release tags…</p>}
+            {tagError && !repositoryError && <div className="tag-error" role="alert"><span>{tagError}</span><button type="button" onClick={() => setRetryCount((count) => count + 1)}>Retry</button></div>}
+            {repositoryIsCurrent && availableTags.length === 1 && <p className="field-message error-text">At least two tags are needed for a comparison.</p>}
+            {repositoryIsCurrent && availableTags.length > 1 && base === head && <p className="field-message error-text">Choose two different tags to compare.</p>}
+            <button className="primary compare-button" type="submit" disabled={!canCompare}>Scan release →</button>
+          </form>
+        </section>
+      </div>
+    </main>
+  );
 }
 
 interface ReportData { owner: string; repo: string; base: string; head: string; commits: CommitRecord[]; verdicts: CommitVerdict[]; cappedAt?: number; totalCommits: number; }
@@ -506,16 +677,36 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<ReportData | null>(null);
   const [progress, setProgress] = useState<{ fetched: number; total: number } | null>(null);
+  const [scanPhase, setScanPhase] = useState<"fetching" | "analysing">("fetching");
   const handleCheck = useCallback(async (repoUrl: string, base: string, head: string) => {
-    setError(null); setProgress(null); setScreen("loading");
+    setError(null); setProgress(null); setScanPhase("fetching"); setScreen("loading");
     try {
       const { owner, repo } = parseRepoUrl(repoUrl);
-      const result = await fetchCommitRange(repoUrl, base, head, { apiBase: API_BASE, cacheTtlMs: 60_000, onProgress: (fetched, total) => setProgress({ fetched, total }) });
-      setData({ owner, repo, base, head, commits: result.commits, verdicts: runChecks(result.commits, base, head), cappedAt: result.cappedAt, totalCommits: result.totalCommits });
+      const result = await fetchCommitRange(repoUrl, base, head, {
+        apiBase: API_BASE,
+        cacheTtlMs: 60_000,
+        onProgress: (fetched, total) => {
+          setProgress({ fetched, total });
+          setScanPhase("analysing");
+        },
+      });
+      setScanPhase("analysing");
+      const verdicts = runChecks(result.commits, base, head);
+      setData({ owner, repo, base, head, commits: result.commits, verdicts, cappedAt: result.cappedAt, totalCommits: result.totalCommits });
       setScreen("report");
     } catch (caught) { setError(friendlyError(caught)); setScreen("input"); }
   }, []);
-  if (screen === "loading") return <main className="loading-page"><div className="loading-card"><div className="brand-mark">FINE<span>PRINT</span></div><span className="eyebrow">SCANNING RELEASE PACKAGE</span><h1>{progress ? `${progress.fetched} of ${progress.total} commits` : "Preparing inspection…"}</h1><div className="loading-bar" /></div></main>;
+  if (screen === "loading") return (
+    <main className="loading-page">
+      <div className="loading-card">
+        <div className="brand-mark">FINE<span>PRINT</span></div>
+        <span className="eyebrow">{scanPhase === "fetching" ? "FETCHING RELEASE DATA" : "ANALYSING CHANGES"}</span>
+        <h1>{progress ? `${progress.fetched} of ${progress.total} commits fetched` : "Preparing inspection…"}</h1>
+        <div className="loading-scanner" aria-label={scanPhase === "fetching" ? "Fetching release data" : "Analysing changes"}><span /></div>
+        <div className="loading-bar" />
+      </div>
+    </main>
+  );
   if (screen === "report" && data) return <Report data={data} onReset={() => { setData(null); setScreen("input"); }} />;
   return <InputScreen onSubmit={handleCheck} error={error} initialRepo={DEFAULT_REPO} initialBase={DEFAULT_BASE} initialHead={DEFAULT_HEAD} />;
 }

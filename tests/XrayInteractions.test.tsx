@@ -10,7 +10,9 @@ import {
   FileDetails,
   FindingSummary,
   findingKey,
+  normalizeRepositoryInput,
   resolveFindingSelection,
+  Scanner,
 } from "../src/ui/App.js";
 import { buildReleaseXray } from "../src/ui/releaseXrayUtils.js";
 import type { CommitRecord } from "../src/github/types.js";
@@ -109,4 +111,49 @@ test("finding summary keeps commit-level findings visible and navigable", () => 
     "commit-b",
     expect.objectContaining(finding)
   );
+});
+
+test("repository input accepts owner/repo and HTTPS GitHub URLs", () => {
+  expect(normalizeRepositoryInput("raahu1l/FinePrint")).toEqual({
+    url: "https://github.com/raahu1l/FinePrint",
+    owner: "raahu1l",
+    repo: "FinePrint",
+  });
+  expect(normalizeRepositoryInput("https://github.com/raahu1l/FinePrint")).toEqual({
+    url: "https://github.com/raahu1l/FinePrint",
+    owner: "raahu1l",
+    repo: "FinePrint",
+  });
+  expect(() => normalizeRepositoryInput("http://github.com/raahu1l/FinePrint")).toThrow();
+});
+
+test("completed scanner is static and labels the scan complete", () => {
+  const commit: CommitRecord = {
+    sha: "commit-c",
+    message: "change ui",
+    files: [{
+      filename: "src/ui/App.tsx",
+      status: "modified",
+      additions: 1,
+      deletions: 0,
+      patch: "+new",
+    }],
+  };
+  const model = buildReleaseXray([commit], [{
+    sha: "commit-c",
+    message: "change ui",
+    status: "ok",
+    reasons: [],
+  }]);
+  render(
+    <Scanner
+      model={model}
+      selectedCategory={null}
+      selectedFile={model.files[0]}
+      onCategory={jest.fn()}
+      onFile={jest.fn()}
+    />
+  );
+  expect(screen.getByText("RELEASE X-RAY · SCAN COMPLETE")).toBeInTheDocument();
+  expect(document.querySelector(".scan-line")).not.toBeInTheDocument();
 });
