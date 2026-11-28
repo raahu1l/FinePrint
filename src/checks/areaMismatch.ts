@@ -1,17 +1,10 @@
+
 import type { CommitRecord } from "../github/types.js";
 
-// ---------------------------------------------------------------------------
-// Exported types
-// ---------------------------------------------------------------------------
-
 export interface UndisclosedDiff {
-  /** Filenames of the undisclosed files */
   files: string[];
-  /** Total additions across undisclosed files */
   additions: number;
-  /** Total deletions across undisclosed files */
   deletions: number;
-  /** Patch of the FIRST undisclosed file, or null if none available */
   sampleSnippet: string | null;
 }
 
@@ -21,30 +14,93 @@ export interface AreaMismatchResult {
   undisclosedDiff?: UndisclosedDiff;
 }
 
-// ---------------------------------------------------------------------------
-// Area mapping
-// ---------------------------------------------------------------------------
-
-/**
- * Each entry maps an area key to either:
- *   - `prefixes`: filename must start with one of these strings
- *   - `filenames`: filename must exactly match one of these strings
- *
- * Multiple keyword aliases for the same area share the same prefixes/filenames.
- */
 interface AreaRule {
   prefixes?: string[];
   filenames?: string[];
+  extensions?: string[];
 }
 
 const AREA_RULES: Record<string, AreaRule> = {
-  auth: { prefixes: ["auth/", "src/auth/"] },
-  ui: { prefixes: ["ui/", "src/ui/", "components/", "src/components/"] },
-  api: { prefixes: ["api/", "src/api/", "routes/", "src/routes/"] },
-  db: { prefixes: ["db/", "src/db/", "database/", "migrations/"] },
-  test: { prefixes: ["test/", "tests/", "__tests__/", "spec/"] },
-  docs: { prefixes: ["docs/", "doc/"] },
-  config: { prefixes: [".github/", "config/", "src/config/"] },
+  auth: {
+    prefixes: ["auth/", "src/auth/", "authentication/"],
+  },
+  ui: {
+    prefixes: [
+      "ui/",
+      "src/ui/",
+      "components/",
+      "src/components/",
+      "views/",
+      "src/views/",
+      "pages/",
+      "src/pages/",
+    ],
+  },
+  api: {
+    prefixes: ["api/", "src/api/", "routes/", "src/routes/", "controllers/"],
+  },
+  db: {
+    prefixes: [
+      "db/",
+      "src/db/",
+      "database/",
+      "migrations/",
+      "prisma/",
+      "drizzle/",
+    ],
+  },
+  test: {
+    prefixes: [
+      "test/",
+      "tests/",
+      "__tests__/",
+      "spec/",
+      "specs/",
+      "test-results/",
+    ],
+    extensions: [".test.ts", ".test.tsx", ".test.js", ".spec.ts", ".spec.js"],
+  },
+  docs: {
+    prefixes: [
+      "docs/",
+      "doc/",
+      "documentation/",
+      "wiki/",
+    ],
+    filenames: [
+      "README",
+      "README.md",
+      "README.rst",
+      "CHANGELOG",
+      "CHANGELOG.md",
+      "CHANGES",
+      "CONTRIBUTING",
+      "CONTRIBUTING.md",
+      "CODE_OF_CONDUCT.md",
+      "LICENSE",
+      "LICENSE.md",
+    ],
+    extensions: [
+      ".md",
+      ".mdx",
+      ".rst",
+      ".adoc",
+    ],
+  },
+  config: {
+    prefixes: [
+      "config/",
+      "src/config/",
+    ],
+    filenames: [
+      ".editorconfig",
+      ".prettierrc",
+      ".eslintrc",
+      "tsconfig.json",
+      "vite.config.ts",
+      "webpack.config.js",
+    ],
+  },
   deps: {
     filenames: [
       "package.json",
@@ -52,95 +108,152 @@ const AREA_RULES: Record<string, AreaRule> = {
       "yarn.lock",
       "pnpm-lock.yaml",
       "requirements.txt",
+      "requirements-dev.txt",
+      "pyproject.toml",
+      "poetry.lock",
+      "Pipfile",
+      "Pipfile.lock",
       "pom.xml",
       "build.gradle",
+      "build.gradle.kts",
       "Gemfile",
       "Gemfile.lock",
       "go.mod",
       "go.sum",
+      "Cargo.toml",
+      "Cargo.lock",
     ],
   },
-  ci: { prefixes: [".github/workflows/", ".circleci/", ".gitlab-ci.yml"] },
+  ci: {
+    prefixes: [
+      ".github/workflows/",
+      ".circleci/",
+      ".buildkite/",
+      ".gitlab/",
+    ],
+    filenames: [
+      ".travis.yml",
+      "Jenkinsfile",
+      "azure-pipelines.yml",
+    ],
+  },
 };
 
-/**
- * Keyword → canonical area key.
- * Aliases ("tests", "dependency", "dependencies") collapse into the same key.
- */
 const KEYWORD_TO_AREA: Record<string, string> = {
   auth: "auth",
+  authentication: "auth",
+  security: "auth",
+
   ui: "ui",
+  frontend: "ui",
+  interface: "ui",
+  component: "ui",
+  components: "ui",
+
   api: "api",
+  endpoint: "api",
+  endpoints: "api",
+  route: "api",
+  routes: "api",
+
   db: "db",
+  database: "db",
+  databases: "db",
+  migration: "db",
+  migrations: "db",
+  schema: "db",
+
   test: "test",
   tests: "test",
+  testing: "test",
+  spec: "test",
+  specs: "test",
+
+  doc: "docs",
   docs: "docs",
+  documentation: "docs",
+  readme: "docs",
+  changelog: "docs",
+  "release notes": "docs",
+  guide: "docs",
+  guides: "docs",
+
   config: "config",
+  configuration: "config",
+  settings: "config",
+
   deps: "deps",
   dependency: "deps",
   dependencies: "deps",
+
   ci: "ci",
+  "continuous integration": "ci",
+  pipeline: "ci",
+  pipelines: "ci",
 };
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+function normalizePath(filename: string): string {
+  return filename.replace(/\\/g, "/").replace(/^\.\/+/, "").toLowerCase();
+}
 
-/** Returns all area keys that a filename belongs to. */
 function areasForFile(filename: string): string[] {
+  const normalized = normalizePath(filename);
+  const basename = normalized.split("/").pop() ?? normalized;
   const matched: string[] = [];
+
   for (const [area, rule] of Object.entries(AREA_RULES)) {
-    if (rule.prefixes?.some((p) => filename.startsWith(p))) {
-      matched.push(area);
-    } else if (rule.filenames?.includes(filename)) {
+    const prefixMatch = rule.prefixes?.some((prefix) =>
+      normalized.startsWith(prefix.toLowerCase())
+    );
+
+    const filenameMatch = rule.filenames?.some(
+      (name) => basename === name.toLowerCase()
+    );
+
+    const extensionMatch = rule.extensions?.some((extension) =>
+      basename.endsWith(extension)
+    );
+
+    if (prefixMatch || filenameMatch || extensionMatch) {
       matched.push(area);
     }
   }
+
   return matched;
 }
 
-/** Returns all area keys claimed in a commit message (whole-word, case-insensitive). */
 function claimedAreas(message: string): Set<string> {
+  const normalized = message.toLowerCase();
   const claimed = new Set<string>();
-  for (const keyword of Object.keys(KEYWORD_TO_AREA)) {
-    // \b matches word boundaries; the 'i' flag makes it case-insensitive.
-    const re = new RegExp(`\\b${keyword}\\b`, "i");
-    if (re.test(message)) {
-      claimed.add(KEYWORD_TO_AREA[keyword]);
+
+  for (const [keyword, area] of Object.entries(KEYWORD_TO_AREA)) {
+    const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const pattern = new RegExp(`(?:^|[^a-z0-9])${escaped}(?=$|[^a-z0-9])`, "i");
+
+    if (pattern.test(normalized)) {
+      claimed.add(area);
     }
   }
+
   return claimed;
 }
 
-// ---------------------------------------------------------------------------
-// Main export
-// ---------------------------------------------------------------------------
-
-/**
- * Checks whether a commit touches areas that are not mentioned in its message.
- *
- * A file is "undisclosed" when ALL of its matched areas are absent from the
- * commit message.  Files that match no area at all are silently ignored.
- */
 export function checkAreaMismatch(commit: CommitRecord): AreaMismatchResult {
   const claimed = claimedAreas(commit.message);
-
-  // Collect undisclosed files, grouped by their (first) undisclosed area key
-  // so we can emit one reason string per area.
   const undisclosedByArea = new Map<string, typeof commit.files[number][]>();
 
   for (const file of commit.files) {
     const areas = areasForFile(file.filename);
 
-    // Ignore files that belong to no known area.
-    if (areas.length === 0) continue;
-
-    // If at least one of the file's areas is claimed, the file is disclosed.
-    if (areas.some((a) => claimed.has(a))) continue;
-
-    // All areas for this file are undisclosed — attribute to each undisclosed area.
     for (const area of areas) {
-      if (!undisclosedByArea.has(area)) undisclosedByArea.set(area, []);
+      if (claimed.has(area)) {
+        continue;
+      }
+
+      if (!undisclosedByArea.has(area)) {
+        undisclosedByArea.set(area, []);
+      }
+
       undisclosedByArea.get(area)!.push(file);
     }
   }
@@ -149,28 +262,39 @@ export function checkAreaMismatch(commit: CommitRecord): AreaMismatchResult {
     return { flagged: false, reasons: [] };
   }
 
-  // Build reasons (one per undisclosed area).
   const reasons: string[] = [];
-  // Deduplicate files across areas for the diff summary.
   const seenFilenames = new Set<string>();
   const undisclosedFiles: typeof commit.files[number][] = [];
 
   for (const [area, files] of undisclosedByArea) {
     reasons.push(`area changed but not mentioned in commit message: ${area}`);
-    for (const f of files) {
-      if (!seenFilenames.has(f.filename)) {
-        seenFilenames.add(f.filename);
-        undisclosedFiles.push(f);
+
+    for (const file of files) {
+      if (seenFilenames.has(file.filename)) {
+        continue;
       }
+
+      seenFilenames.add(file.filename);
+      undisclosedFiles.push(file);
     }
   }
 
   const undisclosedDiff: UndisclosedDiff = {
-    files: undisclosedFiles.map((f) => f.filename),
-    additions: undisclosedFiles.reduce((s, f) => s + f.additions, 0),
-    deletions: undisclosedFiles.reduce((s, f) => s + f.deletions, 0),
-    sampleSnippet: undisclosedFiles[0]?.patch ?? null,
+    files: undisclosedFiles.map((file) => file.filename),
+    additions: undisclosedFiles.reduce(
+      (total, file) => total + file.additions,
+      0
+    ),
+    deletions: undisclosedFiles.reduce(
+      (total, file) => total + file.deletions,
+      0
+    ),
+    sampleSnippet: undisclosedFiles.find((file) => file.patch)?.patch ?? null,
   };
 
-  return { flagged: true, reasons, undisclosedDiff };
+  return {
+    flagged: true,
+    reasons,
+    undisclosedDiff,
+  };
 }

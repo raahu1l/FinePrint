@@ -1,35 +1,109 @@
-# FinePrint
+<div align="center">
 
-![FinePrint receipt example](docs/receipt-screenshot.png)
+# 🔍 FinePrint
 
-Checks whether a release's commit messages actually match what the code changed.
+**Checks whether a release's commit messages actually match what the code changed**
 
-Existing changelog tools (GitHub auto-notes, Release Drafter, semantic-release) summarize what commit messages say. None of them check whether those messages are telling the truth. FinePrint reads the real diff between two release tags and verifies each commit's message against what actually happened in the code.
+[![React](https://img.shields.io/badge/React-Frontend-61DAFB?style=for-the-badge&logo=react&logoColor=black)](https://react.dev/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-Language-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![Vite](https://img.shields.io/badge/Vite-Build-646CFF?style=for-the-badge&logo=vite&logoColor=white)](https://vitejs.dev/)
+[![Netlify](https://img.shields.io/badge/Netlify-Functions-00C7B7?style=for-the-badge&logo=netlify&logoColor=white)](https://www.netlify.com/)
+[![IBM Bob](https://img.shields.io/badge/Built%20with-IBM%20Bob%202.0-052FAD?style=for-the-badge&logo=ibm&logoColor=white)]()
 
-## How it works
+👉 **[Live Demo](https://zesty-dasik-312180.netlify.app/)**
 
+</div>
+
+---
+
+## 📖 Description
+FinePrint reads the real diff between two release tags and verifies each commit's message against what actually changed in the code. All analysis is rule-based and runs in the browser: no live AI call, no account, and no client-side secret.
+
+## 🖥️ Screenshots
+![FinePrint receipt example](./docs/receipt-screenshot.png)
+
+## ❗ Problem
+Changelog tools like GitHub auto-notes, Release Drafter, and semantic-release summarize what commit messages *say*. None of them check whether those messages are telling the truth. A "patch" release can hide a breaking change, and a commit can touch areas it never mentioned.
+
+## 📱 Features
+- **Diff-vs-message mismatch:** flags areas of the codebase that changed but were never mentioned in the commit message
+- **Semver violation:** catches patch or minor bumps that secretly contain breaking changes (removed exports, changed function signatures)
+- **Dependency bump:** flags any major-version jump in a dependency manifest, whatever the message says
+- **Noise filtering:** auto-generated commits (release-plugin bumps, merge commits) are excluded
+- **Release X-ray:** changed files grouped by category, linked to their commits, expandable to the real GitHub patch
+- **Explainable results:** every finding shows which check triggered it
+
+## 🧠 How It Works
 1. Paste a public GitHub repo URL and pick two tags to compare.
-2. FinePrint fetches every commit between those tags, along with its full diff, using the Netlify Function proxy for GitHub's public REST API.
-3. Each commit runs through three independent checks:
-   - **Diff-vs-message mismatch** — extracts the areas of the codebase a commit's message claims to touch, compares that against which areas actually changed in the diff, and flags anything that changed but was never mentioned.
-   - **Semver violation** — checks whether a patch or minor version bump secretly contains a breaking change (e.g. a removed export or changed function signature).
-   - **Dependency bump** — flags any dependency manifest change with a major-version jump, regardless of what the commit message says.
-4. Auto-generated, mechanical commits (release-plugin bumps, merge commits) are excluded automatically, so they never create false noise.
-5. Results render as a release-level X-ray: every unique changed file is grouped by path-based category, connected to its associated commits, and expandable to the actual GitHub patch evidence. Findings remain rule-based and explain which check triggered them.
+2. FinePrint fetches every commit between the tags, with its full diff, through a Netlify Function proxy for GitHub's public REST API.
+3. Each commit runs through the three checks (mismatch, semver, dependency bump).
+4. Mechanical commits are filtered out so they never create false noise.
+5. Results render as a release-level X-ray with the patch evidence behind every finding.
 
-All analysis is rule-based and runs in the browser — no live AI call, account, or client-side secret is required. Production GitHub requests use the Netlify Function proxy, which keeps the optional server-side token out of frontend bundles and enforces public-repository access.
+## 🛠️ Tech Stack
+| Layer | Technology |
+|------|-----------|
+| Frontend | React, TypeScript, Vite |
+| Backend | Netlify Functions (GitHub API proxy) |
+| Data Source | GitHub REST API |
+| Database | None required |
+| Deployment | Netlify |
 
-## Live Demo
-**Live app:** [https://zesty-dasik-312180.netlify.app/]
+## 🏗️ Architecture
+```
+src/            # React app and analysis engine
+netlify/        # Function proxy for the GitHub API
+tests/          # Regression tests
+docs/           # Screenshots
+bob_sessions/   # IBM Bob task-by-task evidence
+```
 
-## Built with IBM Bob 2.0
-Built using Bob's Agent mode with full document understanding of the codebase. The three checks above were built as three parallel subagents — spawned simultaneously, each independently implemented and tested, then merged into a single verdict engine. Iterative hardening (real-data testing, UX fixes, performance tuning) was done across further Agent-mode tasks. See `bob_sessions/` for task-by-task evidence.
+## 🤖 Built with IBM Bob 2.0
+Built for the IBM Bob 2.0 Hackathon using Bob's Agent mode with full document understanding of the codebase. The three checks were built as three parallel subagents, spawned simultaneously, each implemented and tested independently, then merged into a single verdict engine. Further Agent-mode tasks covered real-data testing, UX fixes, and performance tuning. See `bob_sessions/` for task-by-task evidence.
 
-## Tech Stack
-React, TypeScript, Vite, GitHub REST API, and Netlify Functions. No database or account is required.
+## ✅ Validation
+Regression tests cover release aggregation, renames, file statuses, unavailable patches, mixed states, finding navigation, and the Netlify Function proxy.
 
-## Validation
-The repository includes regression coverage for release aggregation, renames, file statuses, unavailable patches, mixed states, finding navigation, and the Netlify Function proxy. Run `npm test`, `npm run typecheck`, `npx tsc --noEmit -p tests/tsconfig.json`, `npm run test:functions`, and `npm run build:ui` for the complete local verification set.
+```bash
+npm test
+npm run typecheck
+npx tsc --noEmit -p tests/tsconfig.json
+npm run test:functions
+npm run build:ui
+```
 
-## License
-No license specified — submitted for the IBM Bob 2.0 Hackathon.
+## 🚀 Getting Started
+
+### Prerequisites
+- Node.js 18+
+
+### Setup
+```bash
+git clone <repo-url>
+cd <repo>
+npm install
+npm run dev
+```
+
+### Environment Variables
+No variables are needed to run locally. A GitHub token is optional and stays server-side in the Netlify Function (never in frontend bundles):
+```
+GITHUB_TOKEN=
+```
+
+## 📄 License
+No license specified. Submitted for the IBM Bob 2.0 Hackathon.
+
+---
+
+## 👨‍💻 Author
+
+**Rahul Walawalkar**
+
+GitHub: [@raahu1l](https://github.com/raahu1l)
+
+Developed with curiosity, continuous learning, and the assistance of AI tools throughout implementation and debugging.
+
+Thanks for stopping by! I hope you enjoy exploring this project as much as I enjoyed building it.
+
+⭐ If you like this project or find it useful, consider giving it a star!
