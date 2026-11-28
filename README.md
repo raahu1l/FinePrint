@@ -8,9 +8,9 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-Language-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Vite](https://img.shields.io/badge/Vite-Build-646CFF?style=for-the-badge&logo=vite&logoColor=white)](https://vitejs.dev/)
 [![Netlify](https://img.shields.io/badge/Netlify-Functions-00C7B7?style=for-the-badge&logo=netlify&logoColor=white)](https://www.netlify.com/)
-[![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](./LICENSE)
+[![IBM Bob](https://img.shields.io/badge/Built%20with-IBM%20Bob%202.0-052FAD?style=for-the-badge&logo=ibm&logoColor=white)]()
 
-👉 **[Live Demo](https://zesty-dasik-312180.netlify.app/)**
+[![Live Demo](https://img.shields.io/badge/🚀_Try_FinePrint-Live_Demo-7657E8?style=for-the-badge)](https://zesty-dasik-312180.netlify.app/)
 
 </div>
 
