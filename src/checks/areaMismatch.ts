@@ -140,22 +140,26 @@ const AREA_RULES: Record<string, AreaRule> = {
 };
 
 const KEYWORD_TO_AREA: Record<string, string> = {
+  // Authentication
   auth: "auth",
   authentication: "auth",
   security: "auth",
 
+  // UI
   ui: "ui",
   frontend: "ui",
   interface: "ui",
   component: "ui",
   components: "ui",
 
+  // API
   api: "api",
   endpoint: "api",
   endpoints: "api",
   route: "api",
   routes: "api",
 
+  // Database
   db: "db",
   database: "db",
   databases: "db",
@@ -163,29 +167,35 @@ const KEYWORD_TO_AREA: Record<string, string> = {
   migrations: "db",
   schema: "db",
 
+  // Tests
   test: "test",
   tests: "test",
   testing: "test",
   spec: "test",
   specs: "test",
 
+  // Documentation
   doc: "docs",
   docs: "docs",
   documentation: "docs",
   readme: "docs",
   changelog: "docs",
+  release: "docs",
   "release notes": "docs",
   guide: "docs",
   guides: "docs",
 
+  // Configuration
   config: "config",
   configuration: "config",
   settings: "config",
 
+  // Dependencies
   deps: "deps",
   dependency: "deps",
   dependencies: "deps",
 
+  // CI
   ci: "ci",
   "continuous integration": "ci",
   pipeline: "ci",
