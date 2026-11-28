@@ -20,7 +20,15 @@
 FinePrint reads the real diff between two release tags and verifies each commit's message against what actually changed in the code. All analysis is rule-based and runs in the browser: no live AI call, no account, and no client-side secret.
 
 ## 🖥️ Screenshots
-![FinePrint receipt example](./docs/receipt-screenshot.png)
+
+### 1. Scan Setup
+![FinePrint Scan Setup](./docs/fineprint-scan-setup.png)
+
+### 2. Release X-ray Results
+![Release X-ray Results](./docs/release-xray-results.png)
+
+### 3. File Inspection and Code Evidence
+![File Inspection Evidence](./docs/file-inspection-evidence.png)
 
 ## ❗ Problem
 Changelog tools like GitHub auto-notes, Release Drafter, and semantic-release summarize what commit messages *say*. None of them check whether those messages are telling the truth. A "patch" release can hide a breaking change, and a commit can touch areas it never mentioned.
