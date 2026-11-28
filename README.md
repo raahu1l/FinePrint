@@ -2,7 +2,7 @@
 
 # 🔍 FinePrint
 
-**Checks whether a release's commit messages actually match what the code changed**
+**Release Notes, Verified Against Code.**
 
 [![React](https://img.shields.io/badge/React-Frontend-61DAFB?style=for-the-badge&logo=react&logoColor=black)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-Language-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
@@ -17,7 +17,7 @@
 ---
 
 ## 📖 Description
-FinePrint reads the real diff between two release tags and verifies each commit's message against what actually changed in the code. All analysis is rule-based and runs in the browser: no live AI call, no account, and no client-side secret.FinePrint started as an IBM Bob 2.0 Hackathon project and has since been improved well beyond the original submission.
+FinePrint reads the real diff between two release tags and verifies each commit's message against what actually changed in the code. All analysis is rule-based and runs in the browser: no live AI call, no account, and no client-side secret. FinePrint started as an IBM Bob 2.0 Hackathon project and has since been improved well beyond the original submission.
 
 ## 🖥️ Screenshots
 
