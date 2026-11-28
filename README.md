@@ -8,7 +8,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-Language-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Vite](https://img.shields.io/badge/Vite-Build-646CFF?style=for-the-badge&logo=vite&logoColor=white)](https://vitejs.dev/)
 [![Netlify](https://img.shields.io/badge/Netlify-Functions-00C7B7?style=for-the-badge&logo=netlify&logoColor=white)](https://www.netlify.com/)
-[![IBM Bob](https://img.shields.io/badge/Built%20with-IBM%20Bob%202.0-052FAD?style=for-the-badge&logo=ibm&logoColor=white)]()
+[![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](./LICENSE)
 
 👉 **[Live Demo](https://zesty-dasik-312180.netlify.app/)**
 
@@ -17,7 +17,7 @@
 ---
 
 ## 📖 Description
-FinePrint reads the real diff between two release tags and verifies each commit's message against what actually changed in the code. All analysis is rule-based and runs in the browser: no live AI call, no account, and no client-side secret.
+FinePrint reads the real diff between two release tags and verifies each commit's message against what actually changed in the code. All analysis is rule-based and runs in the browser: no live AI call, no account, and no client-side secret.FinePrint started as an IBM Bob 2.0 Hackathon project and has since been improved well beyond the original submission.
 
 ## 🖥️ Screenshots
 
@@ -59,26 +59,19 @@ Changelog tools like GitHub auto-notes, Release Drafter, and semantic-release su
 
 ## 🏗️ Architecture
 ```
-src/            # React app and analysis engine
-netlify/        # Function proxy for the GitHub API
-tests/          # Regression tests
-docs/           # Screenshots
-bob_sessions/   # IBM Bob task-by-task evidence
+src/        # React app and analysis engine
+netlify/    # Function proxy for the GitHub API
+tests/      # Regression tests
+docs/       # Screenshots
 ```
 
 ## 🤖 Built with IBM Bob 2.0
-Built for the IBM Bob 2.0 Hackathon using Bob's Agent mode with full document understanding of the codebase. The three checks were built as three parallel subagents, spawned simultaneously, each implemented and tested independently, then merged into a single verdict engine. Further Agent-mode tasks covered real-data testing, UX fixes, and performance tuning. See `bob_sessions/` for task-by-task evidence.
+Built for the IBM Bob 2.0 Hackathon using Bob's Agent mode with full document understanding of the codebase. The three checks were built as three parallel subagents, spawned simultaneously, each implemented and tested independently, then merged into a single verdict engine. The project has been improved further since the hackathon build.
+After the hackathon, I continued improving FinePrint independently:
 
-## ✅ Validation
-Regression tests cover release aggregation, renames, file statuses, unavailable patches, mixed states, finding navigation, and the Netlify Function proxy.
-
-```bash
-npm test
-npm run typecheck
-npx tsc --noEmit -p tests/tsconfig.json
-npm run test:functions
-npm run build:ui
-```
+- **Redesigned the results experience:** Replaced the original receipt-based UI with the Software Release X-ray, making changed files, categories and findings easier to explore.
+- **Improved detection accuracy:** Refined area-mismatch rules and keyword matching to reduce false positives, including release-related documentation changes.
+- **Strengthened testing and reliability:** Expanded regression coverage to 274 passing tests and added more edge-case validation.
 
 ## 🚀 Getting Started
 
@@ -93,6 +86,16 @@ npm install
 npm run dev
 ```
 
+### Run Tests
+Regression tests cover release aggregation, renames, file statuses, unavailable patches, mixed states, finding navigation, and the Netlify Function proxy.
+```bash
+npm test
+npm run typecheck
+npx tsc --noEmit -p tests/tsconfig.json
+npm run test:functions
+npm run build:ui
+```
+
 ### Environment Variables
 No variables are needed to run locally. A GitHub token is optional and stays server-side in the Netlify Function (never in frontend bundles):
 ```
@@ -100,7 +103,10 @@ GITHUB_TOKEN=
 ```
 
 ## 📄 License
-No license specified. Submitted for the IBM Bob 2.0 Hackathon.
+
+This project was developed as part of the IBM Bob 2.0 Hackathon and is maintained as a personal project.
+
+No open-source license has been applied yet. All rights to the source code remain with the author unless otherwise stated.
 
 ---
 
